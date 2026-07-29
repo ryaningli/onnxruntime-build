@@ -25,12 +25,14 @@ find "${RELEASE_DIR}" -name '*.a' \
 	-print | sort -u > "${TMP}/libs.txt"
 echo "    found $(wc -l < "${TMP}/libs.txt") archives"
 
-# 诊断: 哪些 archive 含 onnx::GetOpSchema 定义(定位 schema 来源, 排查符号缺失)
+# 诊断: 哪些 archive 含 onnx::GetOpSchema 定义(定位 schema 来源, 排查符号缺失)。
+# 注意: 必须 `|| true` —— grep 在 0 匹配时退出码=1, 配合 set -euo pipefail 会让
+# 命令替换赋值失败 → 整个脚本被 set -e 杀掉(本诊断在首个不含 schema 的 archive 上即崩)。
 NM_TOOL="${NM:-llvm-nm-16}"
 echo "==> [诊断] 含 onnx::GetOpSchema 定义的 archives:"
 while IFS= read -r lib; do
-	cnt=$("${NM_TOOL}" "$lib" 2>/dev/null | grep '_ZN4onnx11GetOpSchemaI' | grep -cE '^[0-9a-f]+ [Tt] ')
-	[ "$cnt" -gt 0 ] && echo "    $(basename "$lib") : ${cnt} defined"
+	cnt=$("${NM_TOOL}" "$lib" 2>/dev/null | grep '_ZN4onnx11GetOpSchemaI' | grep -cE '^[0-9a-f]+ [Tt] ' || true)
+	[ "${cnt:-0}" -gt 0 ] && echo "    $(basename "$lib") : ${cnt} defined"
 done < "${TMP}/libs.txt"
 
 # 每个 archive 解到独立子目录, 并给 .o 加序号前缀。
@@ -53,5 +55,9 @@ OUT="${OUT_DIR}/libonnxruntime.a"
 rm -f "${OUT}"
 # xargs 分批追加(多次 `ar rcs` 为追加模式), 避免 .o 过多超 ARG_MAX
 find "${TMP}/x" -name '*.o' -print0 | xargs -0 "${AR}" rcs "${OUT}"
+
+# 合并后校验: 确认 onnx::GetOpSchema 定义已进胖库(rename 修复是否生效的直接证据)。
+final_cnt=$("${NM_TOOL}" --defined-only "${OUT}" 2>/dev/null | grep -c '_ZN4onnx11GetOpSchemaI' || true)
+echo "==> [诊断] 合并后 onnx::GetOpSchema defined = ${final_cnt:-0} (0 = rename 修复失效, 符号仍丢)"
 
 echo "==> Merged: ${OUT} ($(du -h "${OUT}" | cut -f1))"
