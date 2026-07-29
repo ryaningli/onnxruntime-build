@@ -35,14 +35,15 @@ cd "${SRC_DIR}"
 echo "==> HEAD = $(git rev-parse --short HEAD) ($(git describe --tags --always 2>/dev/null || echo 'no-tag'))"
 
 echo "==> Building static lib (clang + libc++, ${JOBS} jobs)"
-export CC=clang-15
-export CXX=clang++-15
+export CC=clang-16
+export CXX=clang++-16
 
 ./build.sh \
 	--config Release \
 	--parallel "${JOBS}" \
 	--skip_tests \
 	--allow_running_as_root \
+	--compile_no_warning_as_error \
 	--update --build \
 	--cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF \
 	--cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \

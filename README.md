@@ -62,7 +62,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-15 + libc++ 构建环境 |
+| `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 构建环境 |
 | `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 静态编译 ORT(libc++) |
 | `scripts/merge_lib.sh` | 合并所有 `.a` 成单个胖 `libonnxruntime.a` |
 | `scripts/verify_abi.sh` | CI 质量门禁,确保产物是 libc++ ABI |

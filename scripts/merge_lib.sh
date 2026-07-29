@@ -7,7 +7,7 @@ set -euo pipefail
 WORKDIR="${WORKDIR:-/work}"
 RELEASE_DIR="${WORKDIR}/onnxruntime/build/Linux/Release"
 OUT_DIR="${OUT_DIR:-${WORKDIR}/dist}"
-AR="${AR:-llvm-ar-15}"
+AR="${AR:-llvm-ar-16}"
 
 if [ ! -d "${RELEASE_DIR}" ]; then
 	echo "ERROR: release dir not found: ${RELEASE_DIR}" >&2

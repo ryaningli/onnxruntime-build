@@ -4,7 +4,7 @@
 set -euo pipefail
 
 LIB="${1:-${OUT_DIR:-/work/dist}/libonnxruntime.a}"
-NM="${NM:-llvm-nm-15}"
+NM="${NM:-llvm-nm-16}"
 
 if [ ! -f "${LIB}" ]; then
 	echo "ERROR: library not found: ${LIB}" >&2
