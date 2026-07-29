@@ -42,12 +42,56 @@ jobs:
             ort-builder \
             bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_TAG}"; /work/scripts/merge_lib.sh; /work/scripts/verify_abi.sh'
 
-      - name: Show artifact
-        run: ls -lh out/libonnxruntime.a
+      - name: Stage artifact (per-arch name)
+        run: |
+          mv out/libonnxruntime.a "out/libonnxruntime-${{ matrix.arch }}.a"
+          ls -lh out/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: onnxruntime-libcxx-${{ matrix.arch }}
-          path: out/libonnxruntime.a
+          path: out/libonnxruntime-${{ matrix.arch }}.a
           if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all arch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: onnxruntime-libcxx-*
+          path: assets
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd assets
+          sha256sum *.a > sha256sums.txt
+          ls -lh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.ort_tag }}-libcxx
+          name: ONNX Runtime ${{ inputs.ort_tag }} (libc++, glibc 2.31)
+          make_latest: false
+          body: |
+            ONNX Runtime 静态库, **libc++ ABI**, 基于 Ubuntu 20.04 (glibc 2.31)。
+            供 `cargo zigbuild --target <triple>.2.31` 链接使用。
+
+            ## Assets
+            - `libonnxruntime-x86_64.a`
+            - `libonnxruntime-aarch64.a`
+            - `sha256sums.txt`
+
+            ## 用法
+            见仓库 README「本地消费」一节(三个环境变量 + zigbuild 命令)。
+
+            ## 对应关系
+            tag 必须与 ort-sys API 版本对应:v1.28.x ↔ api-28, v1.27.x ↔ api-27。
+          files: assets/*
