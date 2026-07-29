@@ -12,11 +12,17 @@ if [ ! -f "${LIB}" ]; then
 fi
 
 echo "==> Verifying ABI of ${LIB}"
+# llvm-nm 默认输出 mangled 符号:
+#   libc++      的 std::__1::  → mangle 为 St3__1
+#   libstdc++   的 __cxx11 inline namespace → mangle 里保留字面 __cxx11
+# 故检测 libc++ 要 grep 'St3__1' (mangled), 而非字面 'std::__1' (那是 demangled 形态)。
+total="$("${NM}" --defined-only "${LIB}" 2>/dev/null | wc -l || true)"
 cxx11="$("${NM}" --defined-only "${LIB}" 2>/dev/null | grep -c '__cxx11' || true)"
-libcxx="$("${NM}" --defined-only "${LIB}" 2>/dev/null | grep -c 'std::__1' || true)"
+libcxx="$("${NM}" --defined-only "${LIB}" 2>/dev/null | grep -c 'St3__1' || true)"
 
-echo "    libstdc++ (__cxx11) defined symbols : ${cxx11}"
-echo "    libc++      (std::__1)  defined symbols : ${libcxx}"
+echo "    total defined symbols         : ${total}"
+echo "    libstdc++ (__cxx11 mangled)   : ${cxx11}"
+echo "    libc++      (St3__1 mangled)  : ${libcxx}"
 
 if [ "${cxx11}" -ne 0 ]; then
 	echo "FAIL: found ${cxx11} libstdc++ symbols; library is NOT libc++ ABI" >&2
