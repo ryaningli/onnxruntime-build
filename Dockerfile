@@ -31,7 +31,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 故改用 uv 安装跨架构预编译的 Python 3.9(python-build-standalone 同时覆盖 aarch64 与 x86_64)。
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
     && /root/.local/bin/uv python install 3.9 \
-    && ln -sf /root/.local/share/uv/python/cpython-3.9*/bin/python3.9 /usr/local/bin/python3 \
+    && UV_PY=$(/root/.local/bin/uv python find 3.9) \
+    && ln -sf "$UV_PY" /usr/local/bin/python3 \
     && ln -sf /usr/local/bin/python3 /usr/local/bin/python
 
 # python-build-standalone (uv 安装) 自带 pip, 直接升级构建依赖;
