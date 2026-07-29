@@ -1,23 +1,24 @@
 #!/usr/bin/env bash
-# 用 clang + libc++ 从源码编译 ONNX Runtime, 经 CMake `bundle_static_library` 把全部分量
-# 与依赖(onnx / protobuf / re2 / cpuinfo / absl...)按 target 依赖图递归收集, 用 GNU ar MRI
-# 内联合并成单个 libonnxruntime.a —— 打包法移植自 pykeio/ort-artifacts 的 static-build 工程。
+# 从源码编译 ONNX Runtime, 经 CMake `bundle_static_library` 把全部分量与依赖(onnx / protobuf /
+# re2 / cpuinfo / absl...)按 target 依赖图递归收集, 用 GNU ar MRI 内联合并成单个 libonnxruntime.a
+# —— 打包法移植自 pykeio/ort-artifacts 的 static-build 工程。
 #
-# CUDA 模式(ORT_ENABLE_CUDA=1):在 nvidia/cuda 容器里原生编译 CUDA EP。CUDA EP 在上游恒为
-# 运行时加载的 MODULE 共享库(libonnxruntime_providers_cuda.so),无法静态编进 .a —— 故产物
-# 除 .a 外还含 providers_shared.so / providers_cuda.so, 并随包发 libc++.so.1(rpath=$ORIGIN)。
+# 两种模式:
+#   - CPU(默认):clang-16 + -stdlib=libc++,产出 libc++ ABI 的单个 libonnxruntime.a,
+#     供 cargo zigbuild(--target <triple>.2.31)静态链接(zig 工具链只提供 libc++)。
+#   - CUDA(ORT_ENABLE_CUDA=1):CUDA 的 host_defines.h 在 x86 上对 libc++ 直接 #error
+#     ("libc++ is not supported on x86 system"),故 CUDA 走 libstdc++(clang-16 默认),
+#     产物含 libonnxruntime.so + provider .so(libstdc++),消费端走 ort load-dynamic。
+#     CUDA EP 上游恒为运行时加载的 MODULE 共享库,无法静态编进 .a。
 #
-# 关键: .a 与 provider .so 必须同为 libc++ ABI(否则跨 provider 桥接的 C++ 对象布局错配),
-# 故 -stdlib=libc++ 经 CMAKE_CXX_FLAGS / CMAKE_CUDA_FLAGS 一并传播。
-#
-# 刻意偏离 pyke 的三处(否则重制 ABI bug 或丢 glibc 锁):
-#   - ABI:   clang-16 + -stdlib=libc++            (pyke 用 clang-21 默认 libstdc++)
-#   - glibc: 12.8 → ubuntu:20.04 容器(glibc 2.31) (pyke 用 ubuntu-24.04 = glibc 2.39)
-#   - nvcc host: clang-16 + libc++                (pyke 用 clang-21 + libstdc++)
+# 两种模式都基于 ubuntu:20.04 容器(glibc 2.31);CUDA 编译不需 GPU(仅运行期需要)。
+# 移植自 pyke 的补丁:no-soname(provider .so 不 NEEDED 核心 .so)、abseil __NVCC__ 守卫、
+# CUDA kernel 编译修复。逐个应用,失败仅警告(防 ORT ref 漂移),verify 侧兜底。
 #
 # 用法:
-#   build_ort.sh <ref>                  # CPU 版
-#   ORT_ENABLE_CUDA=1 build_ort.sh <ref>  # CUDA 版(需 nvidia/cuda 容器)
+#   build_ort.sh <ref>                    # CPU 版(libc++)
+#   ORT_ENABLE_CUDA=1 build_ort.sh <ref>  # CUDA 版(libstdc++,需 nvidia/cuda 容器)
+#   ORT_ENABLE_CUDA=1 ORT_FAST=1 build_ort.sh <ref>  # CUDA 快速验证(单 arch,勿发布)
 # <ref> 可以是 tag(如 v1.28.0)或 commit hash。
 set -euo pipefail
 
@@ -53,8 +54,7 @@ fi
 cd "${SRC_DIR}"
 echo "==> HEAD = $(git rev-parse --short HEAD) ($(git describe --tags --always 2>/dev/null || echo 'no-tag'))"
 
-# 移植自 pyke 的补丁(no-soname / abseil-nvcc 守卫 / CUDA kernel 编译修复)。
-# 逐个应用:失败仅警告不中断(防 ORT ref 版本漂移),由 verify_abi.sh 在产物侧兜底。
+# 移植自 pyke 的补丁。逐个应用:失败仅警告不中断(防 ORT ref 版本漂移),由 verify_abi.sh 在产物侧兜底。
 if [ -d "${PATCH_DIR}" ]; then
 	for p in "${PATCH_DIR}"/*.patch; do
 		[ -e "${p}" ] || continue
@@ -74,10 +74,9 @@ case "${ARCH}" in
 	*) echo "ERROR: unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
-# 前置冒烟:验证 nvcc + clang-16 + libc++ 基础管线(CI 节流 —— 10s 失败好过 40min 后才炸)。
+# 前置冒烟:验证 nvcc + clang-16 host 编译管线(CI 节流 —— 10s 失败好过 40min 后才炸)。
 cuda_smoke() {
 	local d="${WORKDIR}/smoke"
-	local host="${CXX_WRAPPER:-${CXX:-clang++-16}}"
 	mkdir -p "${d}"
 	cat > "${d}/smoke.cu" <<'EOF'
 #include <cuda_runtime.h>
@@ -91,18 +90,17 @@ int main() {
 	return static_cast<int>(v.size()) > 0 ? 0 : 1;
 }
 EOF
-	echo "==> CUDA smoke: nvcc -ccbin ${host}(host 经包装器恒加 -stdlib=libc++)"
-	if ! nvcc -ccbin "${host}" -std=c++17 \
+	echo "==> CUDA smoke: nvcc -ccbin ${CXX:-clang++-16}(libstdc++ 默认)"
+	if ! nvcc -ccbin "${CXX:-clang++-16}" -std=c++17 \
 			"${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
-		echo "ERROR: nvcc + host(libc++) 冒烟失败:" >&2
+		echo "ERROR: nvcc + clang-16 冒烟失败:" >&2
 		cat "${d}/smoke.err" >&2
 		exit 1
 	fi
 	echo "    smoke OK"
 }
 
-# 统一 cmake 参数(CPU / CUDA 共用)。rpath=$ORIGIN 让 provider .so 能就近找随包 libc++。
-# NOTE: \$ORIGIN 在双引号里转义成字面 $ORIGIN。
+# 统一 cmake 参数(CPU / CUDA 共用部分;stdlib/CUDA 相关按模式分别追加)。
 CMAKE_ARGS=(
 	-S "${WORKDIR}/src/static-build"
 	-B "${BUILD_DIR}"
@@ -110,10 +108,6 @@ CMAKE_ARGS=(
 	-DCMAKE_INSTALL_PREFIX="${OUT_DIR}"
 	-DONNXRUNTIME_SOURCE_DIR="${SRC_DIR}"
 	-DCMAKE_POSITION_INDEPENDENT_CODE=ON
-	-DCMAKE_CXX_FLAGS="-stdlib=libc++"
-	-DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
-	-DCMAKE_SHARED_LINKER_FLAGS="-stdlib=libc++ -Wl,-rpath,\$ORIGIN"
-	-DCMAKE_MODULE_LINKER_FLAGS="-stdlib=libc++ -Wl,-rpath,\$ORIGIN"
 	-DCMAKE_COMPILE_WARNING_AS_ERROR=OFF
 	-Donnxruntime_BUILD_UNIT_TESTS=OFF
 	-Donnxruntime_CLIENT_PACKAGE_BUILD=ON
@@ -137,12 +131,7 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		CUDA_ARCH="${ORT_FAST_ARCH:-75}"
 		echo "==> FAST/验证模式: CUDA_ARCH=${CUDA_ARCH}(单 arch —— 仅验证用,勿发布)"
 	fi
-	# nvcc host 用包装器:exec clang++-16 -stdlib=libc++ "$@"。nvcc 无论编译还是链接都调它,
-	# 故 host 的编译与链接恒走 libc++。直接给 nvcc 传 -stdlib=libc++ 会 "Unknown option";
-	# -Xcompiler=-stdlib=libc++ 又只覆盖编译不覆盖链接。包装器是强制 nvcc host stdlib 的标准做法。
-	CXX_WRAPPER="${WORKDIR}/clang++-libcxx"
-	printf '#!/bin/sh\nexec %s -stdlib=libc++ "$@"\n' "${CXX:-clang++-16}" > "${CXX_WRAPPER}"
-	chmod +x "${CXX_WRAPPER}"
+	# CUDA 用 libstdc++(clang-16 默认):host_defines.h 在 x86 上对 libc++ #error,故不设 -stdlib。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -150,20 +139,25 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX:-clang++-16} -compress-mode=size"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
 		-Donnxruntime_USE_FP8_KV_CACHE=OFF
 		-Donnxruntime_QUICK_BUILD=ON
 	)
-	export CUDAHOSTCXX="${CXX_WRAPPER}"
-	echo "==> CUDA mode: arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CUDAHOSTCXX}"
-
-	# 前置冒烟:用最简 .cu 验证 nvcc + clang-16 + libc++ 管线(~10s 失败,免得 40min 后才在 ORT 编译炸)。
+	export CUDAHOSTCXX="${CXX:-clang++-16}"
+	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CUDAHOSTCXX}"
 	cuda_smoke
 else
-	echo "==> CPU mode: arch=${ARCH} KLEIDIAI=${KLEIDIAI} AVX2=${AVX2}"
+	# CPU 用 libc++(zig 工具链只提供 libc++)。
+	CMAKE_ARGS+=(
+		-DCMAKE_CXX_FLAGS="-stdlib=libc++"
+		-DCMAKE_EXE_LINKER_FLAGS="-stdlib=libc++"
+		-DCMAKE_SHARED_LINKER_FLAGS="-stdlib=libc++"
+		-DCMAKE_MODULE_LINKER_FLAGS="-stdlib=libc++"
+	)
+	echo "==> CPU mode(libc++): arch=${ARCH} KLEIDIAI=${KLEIDIAI} AVX2=${AVX2}"
 fi
 
 echo "==> Configuring"
@@ -183,30 +177,27 @@ if [ -z "${INSTALLED}" ]; then
 	exit 1
 fi
 cp "${INSTALLED}" "${OUT_DIR}/libonnxruntime.a"
+TARBALL_FILES=(libonnxruntime.a)
 
-# CUDA: 收集 provider .so + libc++ 运行库(provider .so 带 rpath=$ORIGIN 就近找 libc++)。
+# CUDA:从构建树收集 onnxruntime 全部共享库(core libonnxruntime.so + provider .so,含版本符号链接),
+# 供 load-dynamic 消费。不依赖 install 规则(避开对 onnxruntime target install 的不确定性)。
+# libstdc++/CUDA 运行库由宿主提供,不打包。
 if [ "${ENABLE_CUDA}" = "1" ]; then
-	TARBALL_FILES=(libonnxruntime.a)
-	for so in libonnxruntime_providers_shared.so libonnxruntime_providers_cuda.so; do
-		f="$(find "${OUT_DIR}" -name "${so}" -print -quit)"
-		if [ -z "${f}" ]; then
-			echo "ERROR: ${so} not found under ${OUT_DIR} after install" >&2
+	while IFS= read -r f; do
+		[ -z "${f}" ] && continue
+		cp -a "${f}" "${OUT_DIR}/$(basename "${f}")"
+	done < <(find "${BUILD_DIR}" -name 'libonnxruntime*.so*' 2>/dev/null || true)
+	for so in "${OUT_DIR}"/libonnxruntime*.so*; do
+		[ -e "${so}" ] || continue
+		TARBALL_FILES+=("$(basename "${so}")")
+	done
+	# 必须有核心 libonnxruntime.so(load-dynamic 入口)与 CUDA provider。
+	for need in libonnxruntime.so libonnxruntime_providers_cuda.so; do
+		if ! ls "${OUT_DIR}"/${need}* >/dev/null 2>&1; then
+			echo "ERROR: ${need}* not found in build tree" >&2
 			exit 1
 		fi
-		cp "${f}" "${OUT_DIR}/${so}"
-		TARBALL_FILES+=("${so}")
 	done
-	for lib in libc++.so.1 libc++abi.so.1; do
-		f="$(find /usr /opt -name "${lib}" -print -quit)"
-		if [ -z "${f}" ]; then
-			echo "ERROR: ${lib} not found in build image (libc++ runtime needed by provider .so)" >&2
-			exit 1
-		fi
-		cp "${f}" "${OUT_DIR}/${lib}"
-		TARBALL_FILES+=("${lib}")
-	done
-else
-	TARBALL_FILES=(libonnxruntime.a)
 fi
 
 # 统一打包 tar.gz(无论 CPU 单 .a 还是 CUDA 多文件),最终名由 CI 按 arch/cuda 后缀重命名。

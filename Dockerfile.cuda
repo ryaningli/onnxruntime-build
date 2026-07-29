@@ -17,8 +17,9 @@ ENV CC=clang-16
 ENV CXX=clang++-16
 ENV CUDA_HOME=/usr/local/cuda
 
-# 1) clang-16 / libc++-16-dev / libc++abi-16-dev / llvm-16 —— 与 CPU Dockerfile 完全一致,
-#    保证 .a 与 provider .so 都是 libc++ ABI(zig 工具链只提供 libc++)。
+# 1) clang-16 + llvm-16 —— CUDA host 编译器(满足 ORT 要求 gcc/clang≥11.1;CUDA 12.8 支持 clang-16)。
+#    CUDA 走 libstdc++(clang-16 默认 stdlib):CUDA 的 host_defines.h 在 x86 上对 libc++ #error,
+#    故不装 libc++-16-dev。llvm-16 提供 llvm-nm(verify_abi.sh 用)。
 #    UBUNTU_CODENAME 来自基础镜像的 /etc/os-release(focal=12.8 / jammy=13)。
 RUN set -eux; \
     apt-get update; \
@@ -28,7 +29,7 @@ RUN set -eux; \
     echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${UBUNTU_CODENAME} llvm-toolchain-${UBUNTU_CODENAME}-16 main" \
         > /etc/apt/sources.list.d/llvm.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends clang-16 libc++-16-dev libc++abi-16-dev llvm-16; \
+    apt-get install -y --no-install-recommends clang-16 llvm-16; \
     rm -rf /var/lib/apt/lists/*
 
 # 2) Python 3.11 + cmake/ninja via Miniforge3 —— 与 CPU Dockerfile 一致(ORT build 刚需

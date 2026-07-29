@@ -54,14 +54,14 @@ jobs:
 
       - name: 'Stage artifact [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         run: |
-          mv out/onnxruntime-libcxx.tar.gz "out/libonnxruntime-x86_64-libcxx-cuda${{ inputs.cuda_version }}.tar.gz"
+          mv out/onnxruntime-libcxx.tar.gz "out/libonnxruntime-x86_64-cuda${{ inputs.cuda_version }}.tar.gz"
           ls -lh out/
 
       - name: 'Upload artifact'
         uses: actions/upload-artifact@v4
         with:
-          name: onnxruntime-libcxx-cuda${{ inputs.cuda_version }}
-          path: out/libonnxruntime-x86_64-libcxx-cuda${{ inputs.cuda_version }}.tar.gz
+          name: onnxruntime-cuda${{ inputs.cuda_version }}
+          path: out/libonnxruntime-x86_64-cuda${{ inputs.cuda_version }}.tar.gz
           if-no-files-found: error
 
   release:
@@ -75,7 +75,7 @@ jobs:
       - name: 'Download artifact [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         uses: actions/download-artifact@v4
         with:
-          name: onnxruntime-libcxx-cuda${{ inputs.cuda_version }}
+          name: onnxruntime-cuda${{ inputs.cuda_version }}
           path: assets
 
       - name: 'Generate checksums [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
@@ -87,23 +87,26 @@ jobs:
       - name: 'Create GitHub Release [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.ort_ref }}-libcxx-cuda${{ inputs.cuda_version }}
-          name: ONNX Runtime ${{ inputs.ort_ref }} (libc++, CUDA ${{ inputs.cuda_version }})
+          tag_name: ${{ inputs.ort_ref }}-cuda${{ inputs.cuda_version }}
+          name: ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++, glibc 2.31)
           make_latest: false
           body: |
-            ONNX Runtime 静态库 + CUDA EP, **libc++ ABI**。
+            ONNX Runtime + CUDA EP, **libstdc++ ABI**, 基于 Ubuntu 20.04 (glibc 2.31)。
+
+            为什么是 libstdc++ 而非 libc++:CUDA 的 `host_defines.h` 在 x86 上对 libc++ 直接 `#error`
+            ("libc++ is not supported on x86 system"),故 CUDA 无法走 libc++。CPU 版才用 libc++。
 
             产物(`.tar.gz` 内):
-            - `libonnxruntime.a` —— 核心 + CUDA EP 注册符号(libc++)
-            - `libonnxruntime_providers_shared.so` / `libonnxruntime_providers_cuda.so` —— CUDA 内核(libc++, rpath=$ORIGIN)
-            - `libc++.so.1` / `libc++abi.so.1` —— 随包 libc++ 运行库
+            - `libonnxruntime.a` —— 静态核心(libstdc++;仅 cargo build 系统链接器可静态链,zig 不行)
+            - `libonnxruntime.so`(+ 版本符号链接)—— 共享核心,load-dynamic 入口
+            - `libonnxruntime_providers_shared.so` / `libonnxruntime_providers_cuda.so` —— CUDA 内核(MODULE)
 
-            ⚠️ CUDA EP 上游恒为运行时加载的 MODULE 共享库,无法静态编进 `.a`。
-            消费端须:把 provider `.so` 放到运行时可发现处(见 README「CUDA 消费」),宿主须装对应
-            CUDA 运行库(cudart/cublas/cudnn)。详见仓库 README。
+            ⚠️ CUDA EP 上游恒为运行时加载的 MODULE 共享库,无法静态编进单个 `.a`。
+            消费端走 ort **load-dynamic**(zigbuild 只编 Rust、运行时 dlopen `libonnxruntime.so`),
+            宿主须装对应 CUDA 运行库(cudart/cublas/cudnn)。详见仓库 README「CUDA 消费」。
 
             ## Assets
-            - `libonnxruntime-x86_64-libcxx-cuda${{ inputs.cuda_version }}.tar.gz`
+            - `libonnxruntime-x86_64-cuda${{ inputs.cuda_version }}.tar.gz`
             - `sha256sums.txt`
 
             ## 对应关系
