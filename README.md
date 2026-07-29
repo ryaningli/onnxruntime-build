@@ -46,7 +46,7 @@ docker build -t ort-builder .
 mkdir -p out
 # 第一个参数可为 tag 或 commit hash
 docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
-  bash -c '/work/scripts/build_ort.sh "${ORT_REF}" && /work/scripts/merge_lib.sh && /work/scripts/verify_abi.sh'
+  bash -c '/work/scripts/build_ort.sh "${ORT_REF}" && /work/scripts/verify_abi.sh'
 # 产物: out/libonnxruntime.a
 ```
 
@@ -55,7 +55,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 - **Ubuntu 20.04 容器锁 glibc 2.31**:`ubuntu-20.04` runner 已于 2025-04 下线,改用 `ubuntu:20.04` Docker 镜像保证 glibc 2.31。
 - **Python 3.11(Miniforge3)**:ORT 的 `build.py` 刚需 `flatbuffers`(schema 生成)等 pip 包,且 ORT 需 cmake≥3.28(apt 仅 3.16)。Ubuntu 20.04 默认 python3 是 3.8;deadsnakes PPA 已失效、python-build-standalone 带 PEP 668 标记且有别名软链坑。改用 **Miniforge3**(conda-forge):跨架构(仅要求 glibc≥2.17)、无 PEP 668、无软链坑,一份 Dockerfile 用 `uname -m` 自动选 amd64/arm64 安装器,pip 顺带装新版 cmake/ninja。
 - **clang + libc++ 原生编译,不用 zig 编 ORT**:ORT 的 CMake 工程(FetchContent + protoc/flatc 主机工具 + cpuinfo)交叉编译风险高、无成功先例,故在容器内 clang/libc++ 原生编。两架构各用对应原生 runner(amd64 / arm64),零交叉编译。
-- **合并胖单库**:把 ORT 分量 + abseil/protobuf/re2/onnx/cpuinfo 等依赖合并成单个 `libonnxruntime.a`,让 ort-sys 走最简单的单库消费路径(与 pyke 官方包等价)。
+- **CMake `bundle_static_library` 内联合并**:移植自 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts) 的 `static-build` 工程——递归遍历 `onnxruntime` target 依赖图收集全部分量 + abseil/protobuf/re2/onnx/cpuinfo 等依赖,用 GNU ar MRI(`${CMAKE_AR}`)合并成单个 `libonnxruntime.a`。GNU ar MRI 保留同名 member(onnx 各域 `defs.cc.o`)且符号表索引有效,根治此前 `ar x` 覆盖 / llvm-ar MRI 空索引 / `find` 漏库三连失败。让 ort-sys 走单库消费路径(与 pyke 官方包等价)。
 - **zigbuild 保留**:仅用于本地最终链接,发挥其 glibc 锁定 + libc++ 解析能力。CI 编 ORT 用 clang,本地链接用 zig,两者靠「glibc 2.31 + libc++ ABI」契约衔接。
 
 ## 文件
@@ -63,7 +63,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 | 文件 | 作用 |
 |---|---|
 | `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 构建环境 |
-| `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 静态编译 ORT(libc++) |
-| `scripts/merge_lib.sh` | 合并所有 `.a` 成单个胖 `libonnxruntime.a` |
+| `src/static-build/CMakeLists.txt` | CMake `bundle_static_library` 打包工程(移植自 pyke),内联合并成单库 |
+| `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + cmake 直驱编译 ORT(libc++)+ 内联 bundle |
 | `scripts/verify_abi.sh` | CI 质量门禁,确保产物是 libc++ ABI |
 | `.github/workflows/build.yml` | 输入 ref,矩阵构建 x86_64 + aarch64,发布到 Release |

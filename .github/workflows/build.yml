@@ -33,14 +33,14 @@ jobs:
       - name: 'Build Docker image [${{ inputs.ort_ref }}]'
         run: docker build -t ort-builder .
 
-      - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (libc++) + merge + verify [${{ matrix.arch }}]'
+      - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (libc++, bundle) + verify [${{ matrix.arch }}]'
         run: |
           mkdir -p out
           docker run --rm \
             -e ORT_REF="${{ inputs.ort_ref }}" \
             -v "$PWD/out:/work/dist" \
             ort-builder \
-            bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_REF}"; /work/scripts/merge_lib.sh; /work/scripts/verify_abi.sh'
+            bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_REF}"; /work/scripts/verify_abi.sh'
 
       - name: 'Stage artifact [${{ inputs.ort_ref }} · ${{ matrix.arch }}]'
         run: |

@@ -59,4 +59,6 @@ ENV PATH=/opt/miniforge3/envs/ortbuild/bin:${PATH}
 WORKDIR /work
 
 COPY scripts/ /work/scripts/
+# src/static-build/CMakeLists.txt —— bundle_static_library 打包工程(build_ort.sh 以 cmake -S 引用)。
+COPY src/ /work/src/
 RUN chmod +x /work/scripts/*.sh
