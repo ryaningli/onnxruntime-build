@@ -53,7 +53,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 ## 设计要点
 
 - **Ubuntu 20.04 容器锁 glibc 2.31**:`ubuntu-20.04` runner 已于 2025-04 下线,改用 `ubuntu:20.04` Docker 镜像保证 glibc 2.31。
-- **Python 3.9**:ORT 1.28 的 `build.py` 用了 PEP 585 语法(`set[str]`),Ubuntu 20.04 默认 python3 是 3.8,故从 deadsnakes 装 3.9 作默认。
+- **Python 3.9(uv)**:ORT 1.28 的 `build.py` 用了 PEP 585 语法(`set[str]`),Ubuntu 20.04 默认 python3 是 3.8;deadsnakes PPA 已不可靠(x86 报 `~deadsnakes user or team does not exist`、arm64 缺 `python3.9-venv` 致 ensurepip 失效),改用 **uv** 安装跨架构预编译的 python-build-standalone 3.9(同时覆盖 aarch64 与 x86_64,且自带 pip)。
 - **clang + libc++ 原生编译,不用 zig 编 ORT**:ORT 的 CMake 工程(FetchContent + protoc/flatc 主机工具 + cpuinfo)交叉编译风险高、无成功先例,故在容器内 clang/libc++ 原生编。两架构各用对应原生 runner(amd64 / arm64),零交叉编译。
 - **合并胖单库**:把 ORT 分量 + abseil/protobuf/re2/onnx/cpuinfo 等依赖合并成单个 `libonnxruntime.a`,让 ort-sys 走最简单的单库消费路径(与 pyke 官方包等价)。
 - **zigbuild 保留**:仅用于本地最终链接,发挥其 glibc 锁定 + libc++ 解析能力。CI 编 ORT 用 clang,本地链接用 zig,两者靠「glibc 2.31 + libc++ ABI」契约衔接。
@@ -62,7 +62,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | ubuntu:20.04 + python3.9 + clang-15 + libc++ 构建环境 |
+| `Dockerfile` | ubuntu:20.04 + uv/python3.9 + clang-15 + libc++ 构建环境 |
 | `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 静态编译 ORT(libc++) |
 | `scripts/merge_lib.sh` | 合并所有 `.a` 成单个胖 `libonnxruntime.a` |
 | `scripts/verify_abi.sh` | CI 质量门禁,确保产物是 libc++ ABI |

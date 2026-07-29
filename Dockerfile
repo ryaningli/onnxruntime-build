@@ -9,23 +9,13 @@ ENV CXX=clang++-15
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         gnupg \
         wget \
-        software-properties-common \
         build-essential \
         cmake \
         ninja-build \
         git \
-    # ONNX Runtime 1.28 的 build.py 用了 set[str] 等 PEP585 语法, 需 Python 3.9+;
-    # Ubuntu 20.04 默认 python3 是 3.8, 故从 deadsnakes PPA 装 3.9,
-    # 并通过 /usr/local/bin 把默认 python3 指向 3.9(不动系统的 3.8, apt 不受影响)。
-    && add-apt-repository ppa:deadsnakes/ppa -y \
-    && apt-get update && apt-get install -y --no-install-recommends \
-        python3.9 \
-        python3.9-dev \
-        python3.9-distutils \
-    && ln -sf /usr/bin/python3.9 /usr/local/bin/python3 \
-    && ln -sf /usr/bin/python3.9 /usr/local/bin/python \
     && wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/focal/ llvm-toolchain-focal-15 main" \
         > /etc/apt/sources.list.d/llvm.list \
@@ -36,9 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         llvm-15 \
     && rm -rf /var/lib/apt/lists/*
 
-# build.py 依赖 pip / setuptools
-RUN python3 -m ensurepip --upgrade \
-    && python3 -m pip install --no-cache-dir -U setuptools wheel
+# ONNX Runtime 1.28 的 build.py 用了 set[str] 等 PEP585 语法, 需 Python 3.9+。
+# Ubuntu 20.04 默认 python3 是 3.8; deadsnakes PPA 不提供 arm64 包,
+# 故改用 uv 安装跨架构预编译的 Python 3.9(python-build-standalone 同时覆盖 aarch64 与 x86_64)。
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && /root/.local/bin/uv python install 3.9 \
+    && ln -sf /root/.local/share/uv/python/cpython-3.9*/bin/python3.9 /usr/local/bin/python3 \
+    && ln -sf /usr/local/bin/python3 /usr/local/bin/python
+
+# python-build-standalone (uv 安装) 自带 pip, 直接升级构建依赖;
+# 不用 ensurepip —— Debian/deadsnakes 把它拆进 python3.x-venv 包, 不可靠。
+RUN python3 -m pip install --no-cache-dir -U setuptools wheel
 
 WORKDIR /work
 
