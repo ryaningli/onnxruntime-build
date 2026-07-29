@@ -35,29 +35,29 @@ while IFS= read -r lib; do
 	[ "${cnt:-0}" -gt 0 ] && echo "    $(basename "$lib") : ${cnt} defined"
 done < "${TMP}/libs.txt"
 
-# 每个 archive 解到独立子目录, 并给 .o 加序号前缀。
-# 关键: `ar rcs` 按 basename 当成员名, 仅靠独立子目录无法避免跨库同名 .o 互相覆盖
-# (如多个库都有 schema.o/ops.o) → 必须给 .o 重命名成全局唯一, 才不丢符号。
-i=0
-while IFS= read -r lib; do
-	i=$((i + 1))
-	sub="${TMP}/x/${i}"
-	mkdir -p "${sub}"
-	( cd "${sub}" && "${AR}" x "${lib}" )
-	for o in "${sub}"/*.o; do
-		[ -e "$o" ] || continue
-		mv -- "$o" "${sub}/${i}_$(basename "$o")"
-	done
-done < "${TMP}/libs.txt"
-
-echo "==> Repacking into single libonnxruntime.a"
+# 用 MRI script 合并: ADDLIB 把每个 archive 的所有 member 整体加入目标 archive。
+# 绝不能用 `ar x` 逐个提取再 `ar rcs` 重打包 ——
+#   onnx 各域都有 defs.cc → object basename 全是 defs.cc.o, CMake 用 qc(quick-append)
+#   归档 → libonnx.a 内含多条同名 defs.cc.o member。`ar x` 提取时同名 member 互相覆盖,
+#   每个 basename 只剩一个 → 丢失核心域 onnx::GetOpSchema 模板特化(zigbuild 链接失败)。
+# MRI ADDLIB 把整个 archive 的 member 加入目标, 保留所有同名 member; 链接器(lld)按
+# archive symbol table 的 offset 解析同名 member(不依赖 member 名唯一), 各取所需。
+# 已验证: GNU ar / zig ar(llvm) 的 MRI 兼容; GNU ld / lld 均能正确链接含同名 member 的 archive。
 OUT="${OUT_DIR}/libonnxruntime.a"
 rm -f "${OUT}"
-# xargs 分批追加(多次 `ar rcs` 为追加模式), 避免 .o 过多超 ARG_MAX
-find "${TMP}/x" -name '*.o' -print0 | xargs -0 "${AR}" rcs "${OUT}"
+{
+	echo "CREATE ${OUT}"
+	while IFS= read -r lib; do
+		echo "ADDLIB ${lib}"
+	done < "${TMP}/libs.txt"
+	echo "SAVE"
+	echo "END"
+} | "${AR}" -M
+# MRI 的 SAVE 通常已写 symbol table, 但部分实现需显式补 index, 保险起见再 ranlib 一次。
+"${AR}" s "${OUT}" 2>/dev/null || true
 
 # 合并后校验: 确认 onnx::GetOpSchema 定义已进胖库(rename 修复是否生效的直接证据)。
 final_cnt=$("${NM_TOOL}" --defined-only "${OUT}" 2>/dev/null | grep -c '_ZN4onnx11GetOpSchemaI' || true)
-echo "==> [诊断] 合并后 onnx::GetOpSchema defined = ${final_cnt:-0} (0 = rename 修复失效, 符号仍丢)"
+echo "==> [诊断] 合并后 onnx::GetOpSchema defined = ${final_cnt:-0} (无损合并的证据; 此前 ar x 覆盖仅余 ~10)"
 
 echo "==> Merged: ${OUT} ($(du -h "${OUT}" | cut -f1))"
