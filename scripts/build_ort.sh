@@ -44,9 +44,12 @@ export CXX=clang++-15
 	--skip_tests \
 	--update --build \
 	--cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF \
+	--cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
+	--cmake_extra_defines onnxruntime_ENABLE_PYTHON=OFF \
 	--cmake_extra_defines CMAKE_CXX_FLAGS="-stdlib=libc++" \
 	--cmake_extra_defines CMAKE_EXE_LINKER_FLAGS="-stdlib=libc++" \
 	--cmake_extra_defines CMAKE_SHARED_LINKER_FLAGS="-stdlib=libc++" \
+	--cmake_extra_defines CMAKE_MODULE_LINKER_FLAGS="-stdlib=libc++" \
 	--cmake_extra_defines CMAKE_POSITION_INDEPENDENT_CODE=ON
 
 echo "==> Build done. Artifacts under ${SRC_DIR}/build/Linux/Release"
