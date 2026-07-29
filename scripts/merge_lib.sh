@@ -25,13 +25,27 @@ find "${RELEASE_DIR}" -name '*.a' \
 	-print | sort -u > "${TMP}/libs.txt"
 echo "    found $(wc -l < "${TMP}/libs.txt") archives"
 
-# 每个 archive 解到独立子目录, 避免重名 .o 互相覆盖丢失符号
+# 诊断: 哪些 archive 含 onnx::GetOpSchema 定义(定位 schema 来源, 排查符号缺失)
+NM_TOOL="${NM:-llvm-nm-16}"
+echo "==> [诊断] 含 onnx::GetOpSchema 定义的 archives:"
+while IFS= read -r lib; do
+	cnt=$("${NM_TOOL}" "$lib" 2>/dev/null | grep '_ZN4onnx11GetOpSchemaI' | grep -cE '^[0-9a-f]+ [Tt] ')
+	[ "$cnt" -gt 0 ] && echo "    $(basename "$lib") : ${cnt} defined"
+done < "${TMP}/libs.txt"
+
+# 每个 archive 解到独立子目录, 并给 .o 加序号前缀。
+# 关键: `ar rcs` 按 basename 当成员名, 仅靠独立子目录无法避免跨库同名 .o 互相覆盖
+# (如多个库都有 schema.o/ops.o) → 必须给 .o 重命名成全局唯一, 才不丢符号。
 i=0
 while IFS= read -r lib; do
 	i=$((i + 1))
 	sub="${TMP}/x/${i}"
 	mkdir -p "${sub}"
 	( cd "${sub}" && "${AR}" x "${lib}" )
+	for o in "${sub}"/*.o; do
+		[ -e "$o" ] || continue
+		mv -- "$o" "${sub}/${i}_$(basename "$o")"
+	done
 done < "${TMP}/libs.txt"
 
 echo "==> Repacking into single libonnxruntime.a"
