@@ -3,8 +3,8 @@ name: build
 on:
   workflow_dispatch:
     inputs:
-      ort_tag:
-        description: 'ONNX Runtime tag (e.g. v1.28.0; must match ort-sys API version)'
+      ort_ref:
+        description: 'ONNX Runtime tag (e.g. v1.28.0) 或 commit hash;须与 ort-sys API 版本对应(v1.28.x↔api-28)'
         required: true
 
 permissions:
@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.arch }} (libc++, glibc 2.31)
+    name: ${{ matrix.arch }} · ${{ inputs.ort_ref }}
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
@@ -30,24 +30,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
+      - name: 'Build Docker image [${{ inputs.ort_ref }}]'
         run: docker build -t ort-builder .
 
-      - name: Build ONNX Runtime + merge + verify ABI
+      - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (libc++) + merge + verify [${{ matrix.arch }}]'
         run: |
           mkdir -p out
           docker run --rm \
-            -e ORT_TAG="${{ inputs.ort_tag }}" \
+            -e ORT_REF="${{ inputs.ort_ref }}" \
             -v "$PWD/out:/work/dist" \
             ort-builder \
-            bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_TAG}"; /work/scripts/merge_lib.sh; /work/scripts/verify_abi.sh'
+            bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_REF}"; /work/scripts/merge_lib.sh; /work/scripts/verify_abi.sh'
 
-      - name: Stage artifact (per-arch name)
+      - name: 'Stage artifact [${{ inputs.ort_ref }} · ${{ matrix.arch }}]'
         run: |
           mv out/libonnxruntime.a "out/libonnxruntime-${{ matrix.arch }}.a"
           ls -lh out/
 
-      - name: Upload artifact
+      - name: 'Upload artifact [${{ matrix.arch }}]'
         uses: actions/upload-artifact@v4
         with:
           name: onnxruntime-libcxx-${{ matrix.arch }}
@@ -55,30 +55,30 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish release
+    name: 'Publish release · ${{ inputs.ort_ref }}'
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - name: Download all arch artifacts
+      - name: 'Download all arch artifacts [${{ inputs.ort_ref }}]'
         uses: actions/download-artifact@v4
         with:
           pattern: onnxruntime-libcxx-*
           path: assets
           merge-multiple: true
 
-      - name: Generate checksums
+      - name: 'Generate checksums [${{ inputs.ort_ref }}]'
         run: |
           cd assets
           sha256sum *.a > sha256sums.txt
           ls -lh
 
-      - name: Create GitHub Release
+      - name: 'Create GitHub Release [${{ inputs.ort_ref }}]'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.ort_tag }}-libcxx
-          name: ONNX Runtime ${{ inputs.ort_tag }} (libc++, glibc 2.31)
+          tag_name: ${{ inputs.ort_ref }}-libcxx
+          name: ONNX Runtime ${{ inputs.ort_ref }} (libc++, glibc 2.31)
           make_latest: false
           body: |
             ONNX Runtime 静态库, **libc++ ABI**, 基于 Ubuntu 20.04 (glibc 2.31)。
@@ -93,5 +93,5 @@ jobs:
             见仓库 README「本地消费」一节(三个环境变量 + zigbuild 命令)。
 
             ## 对应关系
-            tag 必须与 ort-sys API 版本对应:v1.28.x ↔ api-28, v1.27.x ↔ api-27。
+            ref 必须与 ort-sys API 版本对应:v1.28.x ↔ api-28, v1.27.x ↔ api-27。
           files: assets/*

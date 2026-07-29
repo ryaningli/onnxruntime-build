@@ -10,17 +10,18 @@ ort 默认下载的 pyke 预编译 ONNX Runtime 是 **libstdc++ ABI**(GCC 编译
 
 ## 构建(在 GitHub Actions 上)
 
-仓库 Actions → **build** → Run workflow → 输入 ONNX Runtime tag(如 `v1.28.0`)。
+仓库 Actions → **build** → Run workflow → 输入 ONNX Runtime **tag(如 `v1.28.0`)或 commit hash**。
 
-产出两个 artifact,各含一个合并好的 `libonnxruntime.a`:
-- `onnxruntime-libcxx-x86_64`
-- `onnxruntime-libcxx-aarch64`
+构建完成后会自动发布到 GitHub Release(tag `<ref>-libcxx`),含两个架构的产物:
+- `libonnxruntime-x86_64.a`
+- `libonnxruntime-aarch64.a`
+- `sha256sums.txt`
 
-> **tag 必须与 ort-sys 的 API 版本对应**:v1.28.x ↔ api-28,v1.27.x ↔ api-27,否则头文件符号错配。
+> **ref 必须与 ort-sys 的 API 版本对应**:v1.28.x ↔ api-28,v1.27.x ↔ api-27,否则头文件符号错配。(用 commit hash 时自行确认对应关系。)
 
 ## 本地消费
 
-下载对应架构的 artifact,解压得到 `libonnxruntime.a`,然后在 ort 项目里:
+从 Release 下载对应架构的 `libonnxruntime-<arch>.a`(可重命名为 `libonnxruntime.a`),然后在 ort 项目里:
 
 ```bash
 # 以 aarch64 为例
@@ -43,14 +44,16 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.31
 ```bash
 docker build -t ort-builder .
 mkdir -p out
-docker run --rm -e ORT_TAG=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
-  bash -c '/work/scripts/build_ort.sh "${ORT_TAG}" && /work/scripts/merge_lib.sh && /work/scripts/verify_abi.sh'
+# 第一个参数可为 tag 或 commit hash
+docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
+  bash -c '/work/scripts/build_ort.sh "${ORT_REF}" && /work/scripts/merge_lib.sh && /work/scripts/verify_abi.sh'
 # 产物: out/libonnxruntime.a
 ```
 
 ## 设计要点
 
 - **Ubuntu 20.04 容器锁 glibc 2.31**:`ubuntu-20.04` runner 已于 2025-04 下线,改用 `ubuntu:20.04` Docker 镜像保证 glibc 2.31。
+- **Python 3.9**:ORT 1.28 的 `build.py` 用了 PEP 585 语法(`set[str]`),Ubuntu 20.04 默认 python3 是 3.8,故从 deadsnakes 装 3.9 作默认。
 - **clang + libc++ 原生编译,不用 zig 编 ORT**:ORT 的 CMake 工程(FetchContent + protoc/flatc 主机工具 + cpuinfo)交叉编译风险高、无成功先例,故在容器内 clang/libc++ 原生编。两架构各用对应原生 runner(amd64 / arm64),零交叉编译。
 - **合并胖单库**:把 ORT 分量 + abseil/protobuf/re2/onnx/cpuinfo 等依赖合并成单个 `libonnxruntime.a`,让 ort-sys 走最简单的单库消费路径(与 pyke 官方包等价)。
 - **zigbuild 保留**:仅用于本地最终链接,发挥其 glibc 锁定 + libc++ 解析能力。CI 编 ORT 用 clang,本地链接用 zig,两者靠「glibc 2.31 + libc++ ABI」契约衔接。
@@ -59,8 +62,8 @@ docker run --rm -e ORT_TAG=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | ubuntu:20.04 + clang-15 + libc++ 构建环境 |
-| `scripts/build_ort.sh` | clone + 静态编译 ORT(libc++) |
+| `Dockerfile` | ubuntu:20.04 + python3.9 + clang-15 + libc++ 构建环境 |
+| `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 静态编译 ORT(libc++) |
 | `scripts/merge_lib.sh` | 合并所有 `.a` 成单个胖 `libonnxruntime.a` |
 | `scripts/verify_abi.sh` | CI 质量门禁,确保产物是 libc++ ABI |
-| `.github/workflows/build.yml` | 输入 tag,矩阵构建 x86_64 + aarch64 |
+| `.github/workflows/build.yml` | 输入 ref,矩阵构建 x86_64 + aarch64,发布到 Release |
