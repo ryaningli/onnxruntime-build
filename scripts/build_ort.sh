@@ -42,6 +42,7 @@ export CXX=clang++-15
 	--config Release \
 	--parallel "${JOBS}" \
 	--skip_tests \
+	--allow_running_as_root \
 	--update --build \
 	--cmake_extra_defines onnxruntime_BUILD_SHARED_LIB=OFF \
 	--cmake_extra_defines onnxruntime_BUILD_UNIT_TESTS=OFF \
