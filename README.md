@@ -12,20 +12,22 @@ ort 默认下载的 pyke 预编译 ONNX Runtime 是 **libstdc++ ABI**(GCC 编译
 
 仓库 Actions → **build** → Run workflow → 输入 ONNX Runtime **tag(如 `v1.28.0`)或 commit hash**。
 
-构建完成后会自动发布到 GitHub Release(tag `<ref>-libcxx`),含两个架构的产物:
-- `libonnxruntime-x86_64.a`
-- `libonnxruntime-aarch64.a`
+构建完成后会自动发布到 GitHub Release(tag `<ref>-libcxx`),每个架构打包成一个 `.tar.gz`(内含 `libonnxruntime.a`):
+- `libonnxruntime-x86_64-libcxx.tar.gz`
+- `libonnxruntime-aarch64-libcxx.tar.gz`
 - `sha256sums.txt`
 
 > **ref 必须与 ort-sys 的 API 版本对应**:v1.28.x ↔ api-28,v1.27.x ↔ api-27,否则头文件符号错配。(用 commit hash 时自行确认对应关系。)
 
 ## 本地消费
 
-从 Release 下载对应架构的 `libonnxruntime-<arch>.a`(可重命名为 `libonnxruntime.a`),然后在 ort 项目里:
+从 Release 下载对应架构的 `libonnxruntime-<arch>-libcxx.tar.gz` 并解压,然后在 ort 项目里:
 
 ```bash
 # 以 aarch64 为例
-export ORT_LIB_PATH=/path/to/dir-with-libonnxruntime-a  # 库所在目录(直接放根目录,不要放 Release/ 子目录)
+mkdir -p /tmp/ort-lib-aarch64
+tar -xzf libonnxruntime-aarch64-libcxx.tar.gz -C /tmp/ort-lib-aarch64
+export ORT_LIB_PATH=/tmp/ort-lib-aarch64                # 解压后 .a 所在目录(直接放根目录)
 export ORT_CXX_STDLIB=c++                                # 链 libc++ 而非默认的 libstdc++
 export ORT_SKIP_DOWNLOAD=1                               # 用自编库,不下载 pyke 预编译包
 
@@ -47,7 +49,7 @@ mkdir -p out
 # 第一个参数可为 tag 或 commit hash
 docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
   bash -c '/work/scripts/build_ort.sh "${ORT_REF}" && /work/scripts/verify_abi.sh'
-# 产物: out/libonnxruntime.a
+# 产物: out/onnxruntime-libcxx.tar.gz(内含 libonnxruntime.a)
 ```
 
 ## 设计要点

@@ -91,7 +91,9 @@ int main() {
 }
 EOF
 	echo "==> CUDA smoke: nvcc + ${CXX:-clang++-16} + -stdlib=libc++"
-	if ! nvcc -ccbin "${CXX:-clang++-16}" -Xcompiler=-stdlib=libc++ -std=c++17 \
+	# 直接传 -stdlib=libc++ 给 nvcc(而非 -Xcompiler):nvcc 把它同时传给 host 的编译与链接,
+	# 否则 smoke 的链接阶段会退回 libstdc++ 默认 → std::__1 符号未定义(假阴性)。
+	if ! nvcc -ccbin "${CXX:-clang++-16}" -stdlib=libc++ -std=c++17 \
 			"${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
 		echo "ERROR: nvcc+clang-16+libc++ 冒烟失败 —— libc++ 传播给 nvcc host 的方式需调整:" >&2
 		cat "${d}/smoke.err" >&2
@@ -136,7 +138,8 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		CUDA_ARCH="${ORT_FAST_ARCH:-75}"
 		echo "==> FAST/验证模式: CUDA_ARCH=${CUDA_ARCH}(单 arch —— 仅验证用,勿发布)"
 	fi
-	# nvcc host = clang++-16 + libc++。-Xcompiler 让 nvcc 把 -stdlib=libc++ 传给 host 编译器。
+	# nvcc host = clang++-16 + libc++。直接传 -stdlib=libc++ 给 nvcc:nvcc 把它同时传给 host
+	# 的编译与链接(若用 -Xcompiler 只覆盖编译,链接会退回 libstdc++ 默认)。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -144,7 +147,7 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX:-clang++-16} -Xcompiler=-stdlib=libc++ -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX:-clang++-16} -stdlib=libc++ -compress-mode=size"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
