@@ -77,6 +77,7 @@ esac
 # 前置冒烟:验证 nvcc + clang-16 + libc++ 基础管线(CI 节流 —— 10s 失败好过 40min 后才炸)。
 cuda_smoke() {
 	local d="${WORKDIR}/smoke"
+	local host="${CXX_WRAPPER:-${CXX:-clang++-16}}"
 	mkdir -p "${d}"
 	cat > "${d}/smoke.cu" <<'EOF'
 #include <cuda_runtime.h>
@@ -90,12 +91,10 @@ int main() {
 	return static_cast<int>(v.size()) > 0 ? 0 : 1;
 }
 EOF
-	echo "==> CUDA smoke: nvcc + ${CXX:-clang++-16} + -stdlib=libc++"
-	# 直接传 -stdlib=libc++ 给 nvcc(而非 -Xcompiler):nvcc 把它同时传给 host 的编译与链接,
-	# 否则 smoke 的链接阶段会退回 libstdc++ 默认 → std::__1 符号未定义(假阴性)。
-	if ! nvcc -ccbin "${CXX:-clang++-16}" -stdlib=libc++ -std=c++17 \
+	echo "==> CUDA smoke: nvcc -ccbin ${host}(host 经包装器恒加 -stdlib=libc++)"
+	if ! nvcc -ccbin "${host}" -std=c++17 \
 			"${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
-		echo "ERROR: nvcc+clang-16+libc++ 冒烟失败 —— libc++ 传播给 nvcc host 的方式需调整:" >&2
+		echo "ERROR: nvcc + host(libc++) 冒烟失败:" >&2
 		cat "${d}/smoke.err" >&2
 		exit 1
 	fi
@@ -138,8 +137,12 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		CUDA_ARCH="${ORT_FAST_ARCH:-75}"
 		echo "==> FAST/验证模式: CUDA_ARCH=${CUDA_ARCH}(单 arch —— 仅验证用,勿发布)"
 	fi
-	# nvcc host = clang++-16 + libc++。直接传 -stdlib=libc++ 给 nvcc:nvcc 把它同时传给 host
-	# 的编译与链接(若用 -Xcompiler 只覆盖编译,链接会退回 libstdc++ 默认)。
+	# nvcc host 用包装器:exec clang++-16 -stdlib=libc++ "$@"。nvcc 无论编译还是链接都调它,
+	# 故 host 的编译与链接恒走 libc++。直接给 nvcc 传 -stdlib=libc++ 会 "Unknown option";
+	# -Xcompiler=-stdlib=libc++ 又只覆盖编译不覆盖链接。包装器是强制 nvcc host stdlib 的标准做法。
+	CXX_WRAPPER="${WORKDIR}/clang++-libcxx"
+	printf '#!/bin/sh\nexec %s -stdlib=libc++ "$@"\n' "${CXX:-clang++-16}" > "${CXX_WRAPPER}"
+	chmod +x "${CXX_WRAPPER}"
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -147,14 +150,14 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX:-clang++-16} -stdlib=libc++ -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
 		-Donnxruntime_USE_FP8_KV_CACHE=OFF
 		-Donnxruntime_QUICK_BUILD=ON
 	)
-	export CUDAHOSTCXX="${CXX:-clang++-16}"
+	export CUDAHOSTCXX="${CXX_WRAPPER}"
 	echo "==> CUDA mode: arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CUDAHOSTCXX}"
 
 	# 前置冒烟:用最简 .cu 验证 nvcc + clang-16 + libc++ 管线(~10s 失败,免得 40min 后才在 ORT 编译炸)。
