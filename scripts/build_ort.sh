@@ -131,7 +131,15 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		CUDA_ARCH="${ORT_FAST_ARCH:-75}"
 		echo "==> FAST/验证模式: CUDA_ARCH=${CUDA_ARCH}(单 arch —— 仅验证用,勿发布)"
 	fi
-	# CUDA 用 libstdc++(clang-16 默认):host_defines.h 在 x86 上对 libc++ #error,故不设 -stdlib。
+	# clang-16 默认可能挑 focal 自带 gcc-9 的 libstdc++(缺 <span> 等 C++20 头 → flatbuffers 编译报错)。
+	# 装 g++-12 后,用 --gcc-install-dir 显式指向 gcc-12 的现代 libstdc++。做成 wrapper(exec clang++-16
+	# --gcc-install-dir=... "$@"),CXX 与 nvcc -ccbin 都指向它,统一且确定(C++ 与 CUDA host 都走 gcc-12)。
+	GCC12_DIR="/usr/lib/gcc/$(uname -m)-linux-gnu/12"
+	CXX_WRAPPER="${WORKDIR}/clang++-gcc12"
+	printf '#!/bin/sh\nexec %s --gcc-install-dir=%s "$@"\n' "${CXX:-clang++-16}" "${GCC12_DIR}" > "${CXX_WRAPPER}"
+	chmod +x "${CXX_WRAPPER}"
+	export CXX="${CXX_WRAPPER}"
+	# CUDA 用 libstdc++(clang-16 + gcc-12 头):host_defines.h 在 x86 上对 libc++ #error,故不设 -stdlib。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -139,14 +147,14 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX:-clang++-16} -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
 		-Donnxruntime_USE_FP8_KV_CACHE=OFF
 		-Donnxruntime_QUICK_BUILD=ON
 	)
-	export CUDAHOSTCXX="${CXX:-clang++-16}"
+	export CUDAHOSTCXX="${CXX_WRAPPER}"
 	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CUDAHOSTCXX}"
 	cuda_smoke
 else

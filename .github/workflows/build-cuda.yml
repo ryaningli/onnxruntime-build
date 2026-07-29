@@ -38,7 +38,7 @@ jobs:
       - name: 'Build Docker image [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         run: docker build -f Dockerfile.cuda --build-arg CUDA_BASE=${{ steps.base.outputs.image }} -t ort-builder-cuda .
 
-      - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libc++) + verify'
+      - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++) + verify'
         run: |
           mkdir -p out
           # fast 模式只编单 CUDA arch 验证构建是否走通(空时不向 docker 注入空参数)。
