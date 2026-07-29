@@ -1,0 +1,53 @@
+name: build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ort_tag:
+        description: 'ONNX Runtime tag (e.g. v1.28.0; must match ort-sys API version)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.arch }} (libc++, glibc 2.31)
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # x86_64: amd64 runner + ubuntu:20.04(amd64) 容器, 原生编译
+          - arch: x86_64
+            rust_target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+          # aarch64: arm64 runner + ubuntu:20.04(arm64) 容器, 原生编译
+          # (公开仓库 ARM runner 免费; ubuntu-20.04-arm 原生 runner 不存在, 故用容器)
+          - arch: aarch64
+            rust_target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t ort-builder .
+
+      - name: Build ONNX Runtime + merge + verify ABI
+        run: |
+          mkdir -p out
+          docker run --rm \
+            -e ORT_TAG="${{ inputs.ort_tag }}" \
+            -v "$PWD/out:/work/dist" \
+            ort-builder \
+            bash -c 'set -e; /work/scripts/build_ort.sh "${ORT_TAG}"; /work/scripts/merge_lib.sh; /work/scripts/verify_abi.sh'
+
+      - name: Show artifact
+        run: ls -lh out/libonnxruntime.a
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: onnxruntime-libcxx-${{ matrix.arch }}
+          path: out/libonnxruntime.a
+          if-no-files-found: error

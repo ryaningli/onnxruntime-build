@@ -1,0 +1,4 @@
+/out/
+/dist/
+/onnxruntime/
+*.tar.gz
