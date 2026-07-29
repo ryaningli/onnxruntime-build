@@ -1,0 +1,59 @@
+# CUDA 版 ONNX Runtime 构建(libc++ ABI)。
+#
+# 与 Dockerfile(CPU)的差异:基础镜像换成 nvidia/cuda 的 cudnn-devel 变体 —— 自带
+#   nvcc + CUDA runtime(cudart/cublas/...)+ cuDNN devel 头,避免在容器里手装 CUDA。
+# CUDA 编译不需要 GPU(仅运行期需要),故普通 CPU runner 即可构建。
+#
+# CUDA_BASE 可参数化,覆盖 12.8 / 13:
+#   - 12.8  → nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04  (focal, glibc 2.31 ← 与 CPU 一致)
+#   - 13    → nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04  (jammy, glibc 2.35 ← CUDA 13 无 focal)
+# LLVM 套件按 /etc/os-release 的 UBUNTU_CODENAME 自适应 focal / jammy,故同一份 Dockerfile
+# 两个 CUDA 版本都能用。
+ARG CUDA_BASE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04
+FROM ${CUDA_BASE}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV CC=clang-16
+ENV CXX=clang++-16
+ENV CUDA_HOME=/usr/local/cuda
+
+# 1) clang-16 / libc++-16-dev / libc++abi-16-dev / llvm-16 —— 与 CPU Dockerfile 完全一致,
+#    保证 .a 与 provider .so 都是 libc++ ABI(zig 工具链只提供 libc++)。
+#    UBUNTU_CODENAME 来自基础镜像的 /etc/os-release(focal=12.8 / jammy=13)。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg wget git build-essential; \
+    . /etc/os-release; \
+    wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${UBUNTU_CODENAME} llvm-toolchain-${UBUNTU_CODENAME}-16 main" \
+        > /etc/apt/sources.list.d/llvm.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends clang-16 libc++-16-dev libc++abi-16-dev llvm-16; \
+    rm -rf /var/lib/apt/lists/*
+
+# 2) Python 3.11 + cmake/ninja via Miniforge3 —— 与 CPU Dockerfile 一致(ORT build 刚需
+#    flatbuffers 等,且要求 cmake≥3.26)。uname -m 自适应 amd64(目前 CUDA 只做 x86_64)。
+RUN set -eux; \
+    ARCH="$(uname -m)"; \
+    case "$ARCH" in \
+         x86_64)  M=x86_64 ;; \
+         aarch64) M=aarch64 ;; \
+         *) echo "unsupported architecture: $ARCH" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL -o /tmp/miniforge.sh \
+         "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-${M}.sh"; \
+    bash /tmp/miniforge.sh -b -p /opt/miniforge3; \
+    rm /tmp/miniforge.sh; \
+    /opt/miniforge3/bin/conda create -y -n ortbuild python=3.11; \
+    /opt/miniforge3/envs/ortbuild/bin/pip install --no-cache-dir flatbuffers numpy packaging protobuf; \
+    /opt/miniforge3/bin/conda install -n ortbuild -y -c conda-forge cmake ninja; \
+    ln -sf /opt/miniforge3/envs/ortbuild/bin/python3 /usr/local/bin/python3; \
+    ln -sf /opt/miniforge3/envs/ortbuild/bin/python3 /usr/local/bin/python
+
+ENV PATH=/opt/miniforge3/envs/ortbuild/bin:${PATH}
+
+WORKDIR /work
+
+COPY scripts/ /work/scripts/
+COPY src/ /work/src/
+RUN chmod +x /work/scripts/*.sh

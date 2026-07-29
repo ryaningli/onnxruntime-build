@@ -44,14 +44,14 @@ jobs:
 
       - name: 'Stage artifact [${{ inputs.ort_ref }} · ${{ matrix.arch }}]'
         run: |
-          mv out/libonnxruntime.a "out/libonnxruntime-${{ matrix.arch }}.a"
+          mv out/onnxruntime-libcxx.tar.gz "out/libonnxruntime-${{ matrix.arch }}-libcxx.tar.gz"
           ls -lh out/
 
       - name: 'Upload artifact [${{ matrix.arch }}]'
         uses: actions/upload-artifact@v4
         with:
           name: onnxruntime-libcxx-${{ matrix.arch }}
-          path: out/libonnxruntime-${{ matrix.arch }}.a
+          path: out/libonnxruntime-${{ matrix.arch }}-libcxx.tar.gz
           if-no-files-found: error
 
   release:
@@ -71,7 +71,7 @@ jobs:
       - name: 'Generate checksums [${{ inputs.ort_ref }}]'
         run: |
           cd assets
-          sha256sum *.a > sha256sums.txt
+          sha256sum *.tar.gz > sha256sums.txt
           ls -lh
 
       - name: 'Create GitHub Release [${{ inputs.ort_ref }}]'
@@ -84,14 +84,16 @@ jobs:
             ONNX Runtime 静态库, **libc++ ABI**, 基于 Ubuntu 20.04 (glibc 2.31)。
             供 `cargo zigbuild --target <triple>.2.31` 链接使用。
 
+            每个 arch 打包成单个 `.tar.gz`(内含 `libonnxruntime.a`)。
+
             ## Assets
-            - `libonnxruntime-x86_64.a`
-            - `libonnxruntime-aarch64.a`
+            - `libonnxruntime-x86_64-libcxx.tar.gz`
+            - `libonnxruntime-aarch64-libcxx.tar.gz`
             - `sha256sums.txt`
 
             ## 用法
-            见仓库 README「本地消费」一节(三个环境变量 + zigbuild 命令)。
+            见仓库 README「本地消费」一节(解压 tar.gz + 三个环境变量 + zigbuild 命令)。
 
             ## 对应关系
             ref 必须与 ort-sys API 版本对应:v1.28.x ↔ api-28, v1.27.x ↔ api-27。
-          files: assets/*
+          files: assets/*.tar.gz
