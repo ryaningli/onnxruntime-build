@@ -48,10 +48,14 @@ RUN ARCH="$(uname -m)" \
     && rm /tmp/miniforge.sh \
     && /opt/miniforge3/bin/conda create -y -n ortbuild python=3.11 \
     && /opt/miniforge3/envs/ortbuild/bin/pip install --no-cache-dir \
-         flatbuffers numpy packaging protobuf cmake ninja \
-    && for b in python3 python cmake ninja; do \
-         ln -sf "/opt/miniforge3/envs/ortbuild/bin/$b" "/usr/local/bin/$b"; \
-       done
+         flatbuffers numpy packaging protobuf \
+    && /opt/miniforge3/bin/conda install -n ortbuild -y -c conda-forge cmake ninja \
+    && ln -sf /opt/miniforge3/envs/ortbuild/bin/python3 /usr/local/bin/python3 \
+    && ln -sf /opt/miniforge3/envs/ortbuild/bin/python3 /usr/local/bin/python
+
+# conda env 的 bin 加入 PATH, 让 ORT build.py 能解析到 cmake / ctest / ninja。
+# (pip 的 cmake 包不含 ctest; conda-forge 的 cmake 包含 cmake/ctest/cpack, 版本新)
+ENV PATH=/opt/miniforge3/envs/ortbuild/bin:${PATH}
 
 WORKDIR /work
 
