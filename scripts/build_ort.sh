@@ -158,9 +158,10 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 	# 前置冒烟 + 自动探测 nvcc #2803-D([[gsl::]] 属性)抑制形式 → nvcc_suppr.txt。
 	cuda_smoke
 	NVCC_SUPPR="$(cat "${WORKDIR}/nvcc_suppr.txt" 2>/dev/null || echo "")"
-	# -Xcompiler -Wno-error:ORT 的 CUDA target 内部对 host 加了 -Werror,cutlass 头的 unused-function
-	#   等警告会被升级成错误;让 nvcc 传 -Wno-error 给 host clang 禁用之(CMAKE_COMPILE_WARNING_AS_ERROR
-	#   =OFF 不覆盖 ORT 显式的 target -Werror)。
+	# cutlass 头的 static 函数(cutlassGetStatusString)在 clang-16 host 下触发 -Wunused-function,
+	# 又被 ORT CUDA target 的 -Werror 升级成错误。-Wno-error 必须走 ORT 自己的白名单机制(target PRIVATE、
+	# 在 -Wall/-Werror 之后生效)才能压住;塞进 CMAKE_CUDA_FLAGS 会被后面的 -Wall 冲掉。故由补丁
+	# 0008 把 unused-function 加进 ORT 的 CLANG_WARNING 白名单(已在 target 层正确生效),不在此处处理。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -168,7 +169,7 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size ${NVCC_SUPPR} -Xcompiler -Wno-error"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size ${NVCC_SUPPR}"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF

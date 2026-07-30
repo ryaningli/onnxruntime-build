@@ -1,6 +1,8 @@
 # onnxruntime-build
 
-为 [pyke/ort](https://github.com/pykeio/ort) 的 **zigbuild 交叉编译** 产出 **libc++ ABI** 的 ONNX Runtime 静态库(基于 Ubuntu 20.04 / glibc 2.31,覆盖 x86_64 与 aarch64)。
+为 [pyke/ort](https://github.com/pykeio/ort) 产出两类自编 ONNX Runtime(基于 Ubuntu 20.04 / glibc 2.31):
+- **CPU(libc++ ABI)**:单个静态库,供 `cargo zigbuild --target <triple>.2.31` 链接(覆盖 x86_64 / aarch64)。
+- **CUDA(libstdc++ ABI,x86_64)**:`.so` 一组,供 ort `load-dynamic` 运行时 dlopen(CUDA EP 上游无法静态编进 `.a`)。
 
 ## 为什么需要
 
@@ -41,6 +43,45 @@ cargo zigbuild --release --target aarch64-unknown-linux-gnu.2.31
 
 `--target <triple>.2.31` 中的 `.2.31` 后缀让 zigbuild 锁定 glibc 2.31(与产物编译时的 glibc 一致)。
 
+## CUDA 版(libstdc++,load-dynamic)
+
+CUDA EP 走另一条路,**libstdc++ ABI**(非 libc++),且**只覆盖 x86_64**。
+
+> **为什么不是 libc++**:CUDA 的 `crt/host_defines.h` 在 x86 上检测到 `_LIBCPP_VERSION` 即
+> `#error "libc++ is not supported on x86 system"` —— CUDA 工具链禁止 x86 + libc++ host 编译。
+> 故 CUDA 只能用 libstdc++。而 zig 只提供 libc++、不提供 libstdc++,所以 CUDA **无法走 CPU 那套
+> 单库静态 + zigbuild** 的消费方式,改走 ort 的 **load-dynamic**(运行时 dlopen)。
+> 此外 CUDA EP 在上游**恒为运行时加载的 MODULE 共享库**(`libonnxruntime_providers_cuda.so`),
+> 无法静态编进单个 `.a`。
+
+### 构建
+
+仓库 Actions → **build-cuda** → 输入 ONNX Runtime ref + CUDA 版本(`12.8` / `13`)+ 可选 `fast`
+(快速验证:只编单个 CUDA arch、不发 Release,用于迭代调试)。CUDA 编译**不需要 GPU**(仅运行期需要)。
+
+- `12.8` → 基于 `nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04`(focal,glibc 2.31,与 CPU 一致)。
+- `13` → 基于 `nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04`(jammy,glibc 2.35;CUDA 13 无 focal 变体)。
+
+focal 自带 gcc-9 的 libstdc++ 缺 `<span>` 等 C++20 头,故经 ubuntu-toolchain-r PPA 装 `g++-12`,
+用 `--gcc-install-dir` 让 clang-16/nvcc host 走 gcc-12 的现代 libstdc++。
+
+Release(tag `<ref>-cuda<ver>`),`tar.gz` 内:
+- `libonnxruntime.a` —— 静态核心(libstdc++;仅 `cargo build` 系统链接器可静态链,zig 不行)
+- `libonnxruntime.so`(+ 版本符号链接)—— 共享核心,load-dynamic 入口
+- `libonnxruntime_providers_shared.so` / `libonnxruntime_providers_cuda.so` —— CUDA 内核(MODULE)
+
+### 消费(load-dynamic)
+
+```bash
+mkdir -p /opt/ort-cuda
+tar -xzf libonnxruntime-x86_64-cuda12.8.tar.gz -C /opt/ort-cuda
+export ORT_DYLIB_PATH=/opt/ort-cuda/libonnxruntime.so   # 运行时 dlopen 入口
+# zigbuild 只编 Rust、不链接 ORT 的 C++(load-dynamic 禁用链接),glibc 2.31 锁仍作用于 Rust 二进制
+cargo zigbuild --release --features load-dynamic --target x86_64-unknown-linux-gnu.2.31
+```
+
+运行时宿主须装对应 CUDA 运行库(cudart/cublas/cudnn,匹配 12.8 或 13);libstdc++ 由宿主提供(Linux 标配)。
+
 ## 本地构建(可选,复现 CI;x86_64 无需 ARM 环境)
 
 ```bash
@@ -64,8 +105,11 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 
 | 文件 | 作用 |
 |---|---|
-| `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 构建环境 |
+| `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 的 **CPU** 构建环境 |
+| `Dockerfile.cuda` | nvidia/cuda cudnn-devel + clang-16 + g++-12 的 **CUDA** 构建环境(libstdc++,`CUDA_BASE` 可参数化 12.8/13) |
 | `src/static-build/CMakeLists.txt` | CMake `bundle_static_library` 打包工程(移植自 pyke),内联合并成单库 |
-| `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + cmake 直驱编译 ORT(libc++)+ 内联 bundle |
-| `scripts/verify_abi.sh` | CI 质量门禁,确保产物是 libc++ ABI |
-| `.github/workflows/build.yml` | 输入 ref,矩阵构建 x86_64 + aarch64,发布到 Release |
+| `src/patches/` | 移植自 pyke 的补丁:no-soname、abseil `__NVCC__` 守卫、CUDA kernel 编译修复、cutlass `unused-function` 白名单(clang-16 host) |
+| `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 打补丁 + cmake 直驱编译 ORT(CPU=libc++ / CUDA=libstdc++)+ 内联 bundle + 打 tar.gz |
+| `scripts/verify_abi.sh` | CI 质量门禁(CPU 校验 libc++;CUDA 校验 libstdc++ + `.so` 集合) |
+| `.github/workflows/build.yml` | **CPU**:输入 ref,矩阵构建 x86_64 + aarch64,发布到 `<ref>-libcxx` |
+| `.github/workflows/build-cuda.yml` | **CUDA**:输入 ref + cuda_version(12.8/13),x86_64,发布到 `<ref>-cuda<ver>` |
