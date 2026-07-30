@@ -93,14 +93,22 @@ jobs:
           sha256sum *.tar.gz > sha256sums.txt
           ls -lh
 
+      - name: 'Resolve glibc/Ubuntu [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
+        id: glibc
+        run: |
+          case "${{ inputs.cuda_version }}" in
+            12.8) echo "ubuntu=Ubuntu 20.04 (focal)" >> "$GITHUB_OUTPUT"; echo "glibc=2.31" >> "$GITHUB_OUTPUT" ;;
+            13)   echo "ubuntu=Ubuntu 22.04 (jammy)" >> "$GITHUB_OUTPUT"; echo "glibc=2.35" >> "$GITHUB_OUTPUT" ;;
+          esac
+
       - name: 'Create GitHub Release [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.ort_ref }}-cuda${{ inputs.cuda_version }}
-          name: ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++, glibc 2.31)
+          name: ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++, glibc ${{ steps.glibc.outputs.glibc }})
           make_latest: false
           body: |
-            ONNX Runtime + CUDA EP, **libstdc++ ABI**, 基于 Ubuntu 20.04 (glibc 2.31)。
+            ONNX Runtime + CUDA EP, **libstdc++ ABI**, 基于 ${{ steps.glibc.outputs.ubuntu }} (glibc ${{ steps.glibc.outputs.glibc }})。
 
             为什么是 libstdc++ 而非 libc++:CUDA 的 `host_defines.h` 在 x86 上对 libc++ 直接 `#error`
             ("libc++ is not supported on x86 system"),故 CUDA 无法走 libc++。CPU 版才用 libc++。
