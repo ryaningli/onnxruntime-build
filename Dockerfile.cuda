@@ -7,7 +7,7 @@
 #
 # 基础镜像 nvidia/cuda 的 cudnn-devel 变体 —— 自带 nvcc + CUDA runtime(cudart/cublas/...)+ cuDNN devel 头,
 # 免在容器里手装 CUDA。CUDA 编译不需 GPU(仅运行期需要),故普通 CPU runner 即可构建。
-ARG CUDA_BASE=nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04
+ARG CUDA_BASE=nvidia/cuda:13.2.1-cudnn-devel-ubuntu22.04
 FROM ${CUDA_BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive

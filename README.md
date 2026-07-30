@@ -60,7 +60,7 @@ CUDA EP 走另一条路,**libstdc++ ABI**(非 libc++),且**只覆盖 x86_64**。
 (快速验证:只编单个 CUDA arch、不发 Release,用于迭代调试)。CUDA 编译**不需要 GPU**(仅运行期需要)。
 
 工具链照搬 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts):**clang-21 + CUDA 13**,
-基于 `nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04`(jammy,glibc 2.35)。CUDA 版与 CPU 版的 clang-16/libc++ 约束无关 ——
+基于 `nvidia/cuda:13.2.1-cudnn-devel-ubuntu22.04`(jammy,glibc 2.35)。CUDA 版与 CPU 版的 clang-16/libc++ 约束无关 ——
 CUDA 走 libstdc++(clang 默认 stdlib),且消费端走 load-dynamic(运行时 dlopen、不经 zig 链接 C++),故用哪个 clang 不受 ABI 契约约束。
 此前 clang-16 / gcc-12 wrapper / nvcc 诊断探测 那套是为 CPU 的 libc++ 路线,不适用于 CUDA。
 

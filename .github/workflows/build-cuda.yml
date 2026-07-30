@@ -30,7 +30,7 @@ jobs:
         id: base
         run: |
           case "${{ inputs.cuda_version }}" in
-            13) echo "image=nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04" >> "$GITHUB_OUTPUT" ;;
+            13) echo "image=nvidia/cuda:13.2.1-cudnn-devel-ubuntu22.04" >> "$GITHUB_OUTPUT" ;;
             *)  echo "ERROR: unsupported cuda_version '${{ inputs.cuda_version }}' —— 当前工具链(clang-21)仅支持 13" >&2; exit 1 ;;
           esac
 
