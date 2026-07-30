@@ -94,7 +94,7 @@ EOF
 	echo "==> CUDA smoke: nvcc -ccbin ${CXX_WRAPPER:-${CXX:-clang++-16}}(libstdc++ 默认)"
 	# --diag_suppress=2803:smoke 里故意用 [[gsl::owner]] 触发该诊断,验证抑制生效
 	# (CUDA 12.8 nvcc 不认 [[gsl::]] 属性;ORT 的 gsl/span 会中招)。
-	if ! nvcc -ccbin "${CXX_WRAPPER:-${CXX:-clang++-16}}" --diag_suppress=2803 -std=c++17 \
+	if ! nvcc -ccbin "${CXX_WRAPPER:-${CXX:-clang++-16}}" --diag_suppress 2803 -std=c++17 \
 			"${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
 		echo "ERROR: nvcc + clang-16 冒烟失败:" >&2
 		cat "${d}/smoke.err" >&2
@@ -153,7 +153,7 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size --diag_suppress=2803"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size --diag_suppress 2803"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
