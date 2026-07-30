@@ -7,13 +7,14 @@
 #   - CPU(默认):clang-16 + -stdlib=libc++,产出 libc++ ABI 的单个 libonnxruntime.a,
 #     供 cargo zigbuild(--target <triple>.2.31)静态链接(zig 工具链只提供 libc++)。
 #   - CUDA(ORT_ENABLE_CUDA=1):CUDA 的 host_defines.h 在 x86 上对 libc++ 直接 #error
-#     ("libc++ is not supported on x86 system"),故 CUDA 走 libstdc++(clang-16 默认),
+#     ("libc++ is not supported on x86 system"),故 CUDA 走 libstdc++(clang-21 默认 stdlib),
 #     产物含 libonnxruntime.so + provider .so(libstdc++),消费端走 ort load-dynamic。
 #     CUDA EP 上游恒为运行时加载的 MODULE 共享库,无法静态编进 .a。
 #
-# 两种模式都基于 ubuntu:20.04 容器(glibc 2.31);CUDA 编译不需 GPU(仅运行期需要)。
-# 移植自 pyke 的补丁:no-soname(provider .so 不 NEEDED 核心 .so)、abseil __NVCC__ 守卫、
-# CUDA kernel 编译修复。逐个应用,失败仅警告(防 ORT ref 漂移),verify 侧兜底。
+# CPU 基于 ubuntu:20.04 容器(glibc 2.31,zigbuild 锁配套);CUDA 基于 nvidia/cuda cudnn-devel
+# ubuntu22.04(jammy,glibc 2.35)。CUDA 编译不需 GPU(仅运行期需要)。
+# patch 集与 pykeio/ort-artifacts 的 src/patches/all 对齐(0001–0007)。逐个应用,失败仅警告
+# (防 ORT ref 漂移),verify 侧兜底。
 #
 # 用法:
 #   build_ort.sh <ref>                    # CPU 版(libc++)
@@ -74,45 +75,6 @@ case "${ARCH}" in
 	*) echo "ERROR: unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
-# 前置冒烟:验证 nvcc + clang-16 host 管线,并自动探测能抑制 nvcc #2803-D([[gsl::]] 属性)的形式。
-# nvcc 抑制诊断的选项形式因 CUDA 版本而异(CUDA 12.8 不认裸 --diag_suppress),逐个试,选第一个让
-# [[gsl::owner]] 编过的,写入 ${WORKDIR}/nvcc_suppr.txt 供真实构建用。CI 节流(10s 失败好过 40min)。
-cuda_smoke() {
-	local d="${WORKDIR}/smoke"
-	local host="${CXX_WRAPPER:-${CXX:-clang++-16}}"
-	mkdir -p "${d}"
-	cat > "${d}/smoke.cu" <<'EOF'
-#include <cuda_runtime.h>
-#include <vector>
-__global__ void add_k(int n, const float* x, float* y) {
-	int i = blockIdx.x * blockDim.x + threadIdx.x;
-	if (i < n) y[i] = x[i] + 1.0f;
-}
-int main() {
-	std::vector<float> v(4, 1.0f);
-	[[gsl::owner]] int* gp = nullptr; (void)gp;   // 故意触发 nvcc #2803-D(验证抑制)
-	return static_cast<int>(v.size()) > 0 ? 0 : 1;
-}
-EOF
-	echo "==> CUDA smoke: nvcc -ccbin ${host}(libstdc++)+ 探测 2803 抑制形式"
-	local suppr=""
-	for cand in "-Xcudafe --diag_suppress=2803" "-Xcicc --diag_suppress=2803" "--diag_suppress 2803"; do
-		# shellcheck disable=SC2086  # ${cand} 需按空格拆成多个 nvcc 参数
-		if nvcc -ccbin "${host}" ${cand} -std=c++17 "${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
-			suppr="${cand}"
-			break
-		fi
-		echo "    [${cand}] 不行: $(tail -1 "${d}/smoke.err" 2>/dev/null)"
-	done
-	if [ -z "${suppr}" ]; then
-		echo "ERROR: 未能找到抑制 nvcc #2803-D 的形式(最后错误):" >&2
-		cat "${d}/smoke.err" >&2
-		exit 1
-	fi
-	echo "    smoke OK,抑制形式: ${suppr}"
-	printf '%s' "${suppr}" > "${WORKDIR}/nvcc_suppr.txt"
-}
-
 # 统一 cmake 参数(CPU / CUDA 共用部分;stdlib/CUDA 相关按模式分别追加)。
 CMAKE_ARGS=(
 	-S "${WORKDIR}/src/static-build"
@@ -137,39 +99,25 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		CUDNN_HOME="${ORT_CUDNN_HOME:-${CUDA_HOME:-/usr/local/cuda}}"
 	fi
 	CUDA_HOME="${CUDA_HOME:-/usr/local/cuda}"
-	CUDA_ARCH="${CUDA_ARCH:-75;80;86;89;90}"
-	# FAST/验证模式:只编单个 CUDA arch(nvcc .cu 编译时间近随 arch 数线性增长,5→1 大幅提速)。
+	# CUDA arch 照 pyke(75;80;90)。FAST/验证模式只编单个 arch(nvcc .cu 编译时间近随 arch 数线性增长),
 	# 产物仅供验证构建是否走通,勿发布(消费端缺其他 arch 的 kernel)。CI 里由 inputs.fast 触发。
+	CUDA_ARCH="${CUDA_ARCH:-75;80;90}"
 	if [ "${ORT_FAST:-0}" = "1" ]; then
 		CUDA_ARCH="${ORT_FAST_ARCH:-75}"
 		echo "==> FAST/验证模式: CUDA_ARCH=${CUDA_ARCH}(单 arch —— 仅验证用,勿发布)"
 	fi
-	# clang-16 默认可能挑 focal 自带 gcc-9 的 libstdc++(缺 <span> 等 C++20 头 → flatbuffers 编译报错)。
-	# 装 g++-12 后,用 --gcc-install-dir 显式指向 gcc-12 的现代 libstdc++。做成 wrapper(exec clang++-16
-	# --gcc-install-dir=... "$@"),CXX 与 nvcc -ccbin 都指向它,统一且确定(C++ 与 CUDA host 都走 gcc-12)。
-	GCC12_DIR="/usr/lib/gcc/$(uname -m)-linux-gnu/12"
-	CXX_WRAPPER="${WORKDIR}/clang++-gcc12"
-	printf '#!/bin/sh\nexec %s --gcc-install-dir=%s "$@"\n' "${CXX:-clang++-16}" "${GCC12_DIR}" > "${CXX_WRAPPER}"
-	chmod +x "${CXX_WRAPPER}"
-	export CXX="${CXX_WRAPPER}"
-	# CUDA 用 libstdc++(clang-16 + gcc-12 头):host_defines.h 在 x86 上对 libc++ #error,故不设 -stdlib。
-	export CUDAHOSTCXX="${CXX_WRAPPER}"
-	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CUDAHOSTCXX}"
-	# 前置冒烟 + 自动探测 nvcc #2803-D([[gsl::]] 属性)抑制形式 → nvcc_suppr.txt。
-	cuda_smoke
-	NVCC_SUPPR="$(cat "${WORKDIR}/nvcc_suppr.txt" 2>/dev/null || echo "")"
-	# cutlass 头的 static 函数(cutlassGetStatusString)在 clang-16 host 下触发 -Wunused-function,
-	# 又被 ORT CUDA target 的 -Werror 升级成错误。-Wno-error 必须走 ORT 自己的白名单机制(target PRIVATE、
-	# 在 -Wall/-Werror 之后生效)才能压住;塞进 CMAKE_CUDA_FLAGS 会被后面的 -Wall 冲掉。故由补丁
-	# 0008 把 unused-function 加进 ORT 的 CLANG_WARNING 白名单(已在 target 层正确生效),不在此处处理。
+	# CUDA host 走容器 ENV 的 clang++-21(libstdc++,clang 默认 stdlib)。jammy gcc-11 的 libstdc++ 够现代,
+	# 无需 gcc-12 wrapper。host_defines.h 在 x86 对 libc++ #error,故不设 -stdlib。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
+	# (CUDA 参数照搬 pykeio/ort-artifacts build.ts。)
+	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CXX}"
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
 		-Donnxruntime_NVCC_THREADS=1
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size ${NVCC_SUPPR}"
+		-DCMAKE_CUDA_FLAGS="-ccbin clang++-21 -compress-mode=size"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF

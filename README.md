@@ -6,7 +6,7 @@
 
 ## 为什么需要
 
-ort 默认下载的 pyke 预编译 ONNX Runtime 是 **libstdc++ ABI**(GCC 编译,符号 `std::__cxx11::*`)。而 `cargo zigbuild` 用 zig 当交叉链接器,zig 工具链只自带 **libc++**(`std::__1::*`),**不提供 libstdc++**。两套 C++ ABI 符号名不同,导致 zigbuild 链接时报一片 `undefined symbol: std::__cxx11::*`。
+ort 默认下载的 pyke 预编译 ONNX Runtime 是 **libstdc++ ABI**(pyke 用 clang 编译但**未指定 `-stdlib=libc++`**,而 clang 在 Linux 默认走 libstdc++,符号 `std::__cxx11::*`)。而 `cargo zigbuild` 用 zig 当交叉链接器,zig 工具链只自带 **libc++**(`std::__1::*`),**不提供 libstdc++**。两套 C++ ABI 符号名不同,导致 zigbuild 静态链接时报一片 `undefined symbol: std::__cxx11::*`。
 
 本项目从源码用 **clang + libc++** 重编 ONNX Runtime,产出 libc++ ABI 的静态库,且基于 **Ubuntu 20.04(glibc 2.31)**,与 zigbuild 的 `--glibc 2.31` 锁定配套。
 
@@ -56,14 +56,13 @@ CUDA EP 走另一条路,**libstdc++ ABI**(非 libc++),且**只覆盖 x86_64**。
 
 ### 构建
 
-仓库 Actions → **build-cuda** → 输入 ONNX Runtime ref + CUDA 版本(`12.8` / `13`)+ 可选 `fast`
+仓库 Actions → **build-cuda** → 输入 ONNX Runtime ref + CUDA 版本(当前仅 `13`)+ 可选 `fast`
 (快速验证:只编单个 CUDA arch、不发 Release,用于迭代调试)。CUDA 编译**不需要 GPU**(仅运行期需要)。
 
-- `12.8` → 基于 `nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04`(focal,glibc 2.31,与 CPU 一致)。
-- `13` → 基于 `nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04`(jammy,glibc 2.35;CUDA 13 无 focal 变体)。
-
-focal 自带 gcc-9 的 libstdc++ 缺 `<span>` 等 C++20 头,故经 ubuntu-toolchain-r PPA 装 `g++-12`,
-用 `--gcc-install-dir` 让 clang-16/nvcc host 走 gcc-12 的现代 libstdc++。
+工具链照搬 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts):**clang-21 + CUDA 13**,
+基于 `nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04`(jammy,glibc 2.35)。CUDA 版与 CPU 版的 clang-16/libc++ 约束无关 ——
+CUDA 走 libstdc++(clang 默认 stdlib),且消费端走 load-dynamic(运行时 dlopen、不经 zig 链接 C++),故用哪个 clang 不受 ABI 契约约束。
+此前 clang-16 / gcc-12 wrapper / nvcc 诊断探测 那套是为 CPU 的 libc++ 路线,不适用于 CUDA。
 
 Release(tag `<ref>-cuda<ver>`),`tar.gz` 内:
 - `libonnxruntime.a` —— 静态核心(libstdc++;仅 `cargo build` 系统链接器可静态链,zig 不行)
@@ -74,13 +73,13 @@ Release(tag `<ref>-cuda<ver>`),`tar.gz` 内:
 
 ```bash
 mkdir -p /opt/ort-cuda
-tar -xzf libonnxruntime-x86_64-cuda12.8.tar.gz -C /opt/ort-cuda
+tar -xzf libonnxruntime-x86_64-cuda13.tar.gz -C /opt/ort-cuda
 export ORT_DYLIB_PATH=/opt/ort-cuda/libonnxruntime.so   # 运行时 dlopen 入口
-# zigbuild 只编 Rust、不链接 ORT 的 C++(load-dynamic 禁用链接),glibc 2.31 锁仍作用于 Rust 二进制
-cargo zigbuild --release --features load-dynamic --target x86_64-unknown-linux-gnu.2.31
+# zigbuild 只编 Rust、不链接 ORT 的 C++(load-dynamic 禁用链接)—— 故 libstdc++ 不影响 zigbuild
+cargo zigbuild --release --features load-dynamic --target x86_64-unknown-linux-gnu.2.35
 ```
 
-运行时宿主须装对应 CUDA 运行库(cudart/cublas/cudnn,匹配 12.8 或 13);libstdc++ 由宿主提供(Linux 标配)。
+运行时宿主须装对应 CUDA 运行库(cudart/cublas/cudnn,匹配 CUDA 13)+ glibc ≥ 2.35;libstdc++ 由宿主提供(Linux 标配)。
 
 ## 本地构建(可选,复现 CI;x86_64 无需 ARM 环境)
 
@@ -106,10 +105,10 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 | 文件 | 作用 |
 |---|---|
 | `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 的 **CPU** 构建环境 |
-| `Dockerfile.cuda` | nvidia/cuda cudnn-devel + clang-16 + g++-12 的 **CUDA** 构建环境(libstdc++,`CUDA_BASE` 可参数化 12.8/13) |
+| `Dockerfile.cuda` | nvidia/cuda cudnn-devel(ubuntu22.04/jammy)+ clang-21 的 **CUDA** 构建环境(libstdc++,照搬 pyke 的 clang-21 + CUDA 13) |
 | `src/static-build/CMakeLists.txt` | CMake `bundle_static_library` 打包工程(移植自 pyke),内联合并成单库 |
-| `src/patches/` | 移植自 pyke 的补丁:no-soname、abseil `__NVCC__` 守卫、CUDA kernel 编译修复、cutlass `unused-function` 白名单(clang-16 host) |
+| `src/patches/` | 与 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts) 的 `src/patches/all` 对齐(0001–0007):no-soname、cpuinfo arm64、logger-mutex、kernel-registry-release、abseil `__NVCC__` 守卫、CUDA kernel 编译修复 |
 | `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 打补丁 + cmake 直驱编译 ORT(CPU=libc++ / CUDA=libstdc++)+ 内联 bundle + 打 tar.gz |
 | `scripts/verify_abi.sh` | CI 质量门禁(CPU 校验 libc++;CUDA 校验 libstdc++ + `.so` 集合) |
 | `.github/workflows/build.yml` | **CPU**:输入 ref,矩阵构建 x86_64 + aarch64,发布到 `<ref>-libcxx` |
-| `.github/workflows/build-cuda.yml` | **CUDA**:输入 ref + cuda_version(12.8/13),x86_64,发布到 `<ref>-cuda<ver>` |
+| `.github/workflows/build-cuda.yml` | **CUDA**:输入 ref + cuda_version(13),x86_64,发布到 `<ref>-cuda<ver>` |

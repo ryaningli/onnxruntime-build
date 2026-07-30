@@ -7,9 +7,9 @@ on:
         description: 'ONNX Runtime tag (e.g. v1.28.0) 或 commit hash;须与 ort-sys API 版本对应(v1.28.x↔api-28)'
         required: true
       cuda_version:
-        description: 'CUDA 版本: 12.8 (ubuntu20.04/glibc2.31) 或 13 (ubuntu22.04/glibc2.35)'
+        description: 'CUDA 版本: 13 (ubuntu22.04 / glibc 2.35)。当前工具链(clang-21 + CUDA13)仅支持 13。'
         required: true
-        default: '12.8'
+        default: '13'
       fast:
         description: '快速验证模式:只编单个 CUDA arch(75)、不发 Release。用于迭代调试构建是否走通。'
         type: boolean
@@ -30,9 +30,8 @@ jobs:
         id: base
         run: |
           case "${{ inputs.cuda_version }}" in
-            12.8) echo "image=nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04" >> "$GITHUB_OUTPUT" ;;
-            13)   echo "image=nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04"  >> "$GITHUB_OUTPUT" ;;
-            *)    echo "ERROR: unsupported cuda_version '${{ inputs.cuda_version }}' (12.8 | 13)" >&2; exit 1 ;;
+            13) echo "image=nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04" >> "$GITHUB_OUTPUT" ;;
+            *)  echo "ERROR: unsupported cuda_version '${{ inputs.cuda_version }}' —— 当前工具链(clang-21)仅支持 13" >&2; exit 1 ;;
           esac
 
       - uses: docker/setup-buildx-action@v3
@@ -93,22 +92,14 @@ jobs:
           sha256sum *.tar.gz > sha256sums.txt
           ls -lh
 
-      - name: 'Resolve glibc/Ubuntu [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
-        id: glibc
-        run: |
-          case "${{ inputs.cuda_version }}" in
-            12.8) echo "ubuntu=Ubuntu 20.04 (focal)" >> "$GITHUB_OUTPUT"; echo "glibc=2.31" >> "$GITHUB_OUTPUT" ;;
-            13)   echo "ubuntu=Ubuntu 22.04 (jammy)" >> "$GITHUB_OUTPUT"; echo "glibc=2.35" >> "$GITHUB_OUTPUT" ;;
-          esac
-
       - name: 'Create GitHub Release [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.ort_ref }}-cuda${{ inputs.cuda_version }}
-          name: ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++, glibc ${{ steps.glibc.outputs.glibc }})
+          name: ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++, glibc 2.35)
           make_latest: false
           body: |
-            ONNX Runtime + CUDA EP, **libstdc++ ABI**, 基于 ${{ steps.glibc.outputs.ubuntu }} (glibc ${{ steps.glibc.outputs.glibc }})。
+            ONNX Runtime + CUDA EP, **libstdc++ ABI**, 基于 Ubuntu 22.04 (jammy, glibc 2.35)。
 
             为什么是 libstdc++ 而非 libc++:CUDA 的 `host_defines.h` 在 x86 上对 libc++ 直接 `#error`
             ("libc++ is not supported on x86 system"),故 CUDA 无法走 libc++。CPU 版才用 libc++。
@@ -119,8 +110,9 @@ jobs:
             - `libonnxruntime_providers_shared.so` / `libonnxruntime_providers_cuda.so` —— CUDA 内核(MODULE)
 
             ⚠️ CUDA EP 上游恒为运行时加载的 MODULE 共享库,无法静态编进单个 `.a`。
-            消费端走 ort **load-dynamic**(zigbuild 只编 Rust、运行时 dlopen `libonnxruntime.so`),
-            宿主须装对应 CUDA 运行库(cudart/cublas/cudnn)。详见仓库 README「CUDA 消费」。
+            消费端走 ort **load-dynamic**(zigbuild 只编 Rust、运行时 dlopen `libonnxruntime.so`,
+            不链接 ORT 的 C++,故 libstdc++ 不影响 zigbuild)。宿主须装对应 CUDA 运行库(cudart/cublas/cudnn,
+            匹配 CUDA 13)+ glibc ≥ 2.35。详见仓库 README「CUDA 消费」。
 
             ## Assets
             - `libonnxruntime-x86_64-cuda${{ inputs.cuda_version }}.tar.gz`

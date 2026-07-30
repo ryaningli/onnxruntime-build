@@ -10,7 +10,7 @@
 set -euo pipefail
 
 OUT_DIR="${OUT_DIR:-/work/dist}"
-NM="${NM:-llvm-nm-16}"
+NM="${NM:-llvm-nm-21}"
 
 # 统计某库的 libstdc++/libc++ mangled 符号数。$1=文件。
 symbol_counts() {

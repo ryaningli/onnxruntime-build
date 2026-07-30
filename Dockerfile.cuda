@@ -1,48 +1,37 @@
 # CUDA 版 ONNX Runtime 构建(libstdc++ ABI —— CUDA 的 host_defines.h 在 x86 拒 libc++)。
 #
-# 与 Dockerfile(CPU)的差异:基础镜像换成 nvidia/cuda 的 cudnn-devel 变体 —— 自带
-#   nvcc + CUDA runtime(cudart/cublas/...)+ cuDNN devel 头,避免在容器里手装 CUDA。
-# CUDA 编译不需要 GPU(仅运行期需要),故普通 CPU runner 即可构建。
+# 工具链照搬 pykeio/ort-artifacts:clang-21 + CUDA 13。
+# CUDA 版与 CPU 版的 libc++/clang-16 约束无关 —— CUDA 走 libstdc++(clang 默认 stdlib),
+# 且消费端走 ort load-dynamic(运行时 dlopen,不经 zig 链接 C++),故用哪个 clang 不受 ABI 契约约束。
+# 此前 clang-16/g++-12 wrapper/nvcc 诊断探测 那套是为 CPU 的 libc++ 路线,不适用于 CUDA。
 #
-# CUDA_BASE 可参数化,覆盖 12.8 / 13:
-#   - 12.8  → nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04  (focal, glibc 2.31 ← 与 CPU 一致)
-#   - 13    → nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04  (jammy, glibc 2.35 ← CUDA 13 无 focal)
-# LLVM 套件按 /etc/os-release 的 UBUNTU_CODENAME 自适应 focal / jammy,故同一份 Dockerfile
-# 两个 CUDA 版本都能用。
-ARG CUDA_BASE=nvidia/cuda:12.8.1-cudnn-devel-ubuntu20.04
+# 基础镜像 nvidia/cuda 的 cudnn-devel 变体 —— 自带 nvcc + CUDA runtime(cudart/cublas/...)+ cuDNN devel 头,
+# 免在容器里手装 CUDA。CUDA 编译不需 GPU(仅运行期需要),故普通 CPU runner 即可构建。
+ARG CUDA_BASE=nvidia/cuda:13.0.3-cudnn-devel-ubuntu22.04
 FROM ${CUDA_BASE}
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CC=clang-16
-ENV CXX=clang++-16
+ENV CC=clang-21
+ENV CXX=clang++-21
 ENV CUDA_HOME=/usr/local/cuda
 
-# ubuntu-toolchain-r PPA 公钥内嵌进来 —— 运行期不再访问 keyserver(add-apt-repository 走 HKP
-# 会在 CI 里挂死 ~9min)。下方 RUN 用它手动加 PPA 源。
-COPY src/cuda/ubuntu-toolchain-r.asc /tmp/ubuntu-toolchain-r.asc
-
-# 1) clang-16 + llvm-16 —— CUDA host 编译器(满足 ORT 要求 gcc/clang≥11.1;CUDA 12.8 支持 clang-16)。
-#    CUDA 走 libstdc++(clang-16 默认 stdlib):CUDA 的 host_defines.h 在 x86 上对 libc++ #error,
-#    故不装 libc++-16-dev。llvm-16 提供 llvm-nm(verify_abi.sh 用)。
-#    g++-12(via ubuntu-toolchain-r PPA):focal 自带 gcc-9 的 libstdc++ 缺 <span> 等 C++20 头,
-#    ORT 的 flatbuffers 依赖需之;装 g++-12 提供现代 libstdc++。build_ort.sh 用 --gcc-install-dir 指向它。
-#    UBUNTU_CODENAME 来自基础镜像的 /etc/os-release(focal=12.8 / jammy=13)。
+# 1) clang-21 + llvm-21 —— CUDA host 编译器(照搬 pyke 的 clang-21)。
+#    CUDA 走 libstdc++(clang 默认 stdlib):host_defines.h 在 x86 对 libc++ #error,故不装 libc++-dev。
+#    jammy 自带 gcc-11 的 libstdc++ 够现代(<span> 等 C++20 头齐全),无需 PPA g++-12/clang-16 那套。
+#    llvm-21 提供 llvm-nm(verify_abi.sh 用)。UBUNTU_CODENAME 来自基础镜像 /etc/os-release(jammy)。
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg wget git build-essential; \
     . /etc/os-release; \
     wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg; \
-    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${UBUNTU_CODENAME} llvm-toolchain-${UBUNTU_CODENAME}-16 main" \
+    echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${UBUNTU_CODENAME} llvm-toolchain-${UBUNTU_CODENAME}-21 main" \
         > /etc/apt/sources.list.d/llvm.list; \
-    gpg --dearmor < /tmp/ubuntu-toolchain-r.asc > /usr/share/keyrings/toolchain.gpg; \
-    echo "deb [signed-by=/usr/share/keyrings/toolchain.gpg] http://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${UBUNTU_CODENAME} main" \
-        > /etc/apt/sources.list.d/toolchain.list; \
     apt-get update; \
-    apt-get install -y --no-install-recommends clang-16 llvm-16 g++-12; \
+    apt-get install -y --no-install-recommends clang-21 llvm-21; \
     rm -rf /var/lib/apt/lists/*
 
 # 2) Python 3.11 + cmake/ninja via Miniforge3 —— 与 CPU Dockerfile 一致(ORT build 刚需
-#    flatbuffers 等,且要求 cmake≥3.26)。uname -m 自适应 amd64(目前 CUDA 只做 x86_64)。
+#    flatbuffers 等,且要求 cmake≥3.26)。uname -m 自适应 amd64(CUDA 只做 x86_64)。
 RUN set -eux; \
     ARCH="$(uname -m)"; \
     case "$ARCH" in \
