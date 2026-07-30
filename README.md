@@ -107,7 +107,7 @@ docker run --rm -e ORT_REF=v1.28.0 -v "$PWD/out:/work/dist" ort-builder \
 | `Dockerfile` | ubuntu:20.04 + Miniforge/python3.11 + clang-16 + libc++ 的 **CPU** 构建环境 |
 | `Dockerfile.cuda` | nvidia/cuda cudnn-devel(ubuntu22.04/jammy)+ clang-21 的 **CUDA** 构建环境(libstdc++,照搬 pyke 的 clang-21 + CUDA 13) |
 | `src/static-build/CMakeLists.txt` | CMake `bundle_static_library` 打包工程(移植自 pyke),内联合并成单库 |
-| `src/patches/` | 与 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts) 的 `src/patches/all` 对齐(0001–0007):no-soname、cpuinfo arm64、logger-mutex、kernel-registry-release、abseil `__NVCC__` 守卫、CUDA kernel 编译修复 |
+| `src/patches/` | 与 [pykeio/ort-artifacts](https://github.com/pykeio/ort-artifacts) 的 `src/patches/all` 对齐(0001–0007,跳 0005):no-soname、cpuinfo arm64、logger-mutex、kernel-registry-release、abseil `__NVCC__` 守卫、CUDA kernel 编译修复;另增 `0009-disable-warnings-as-error.patch`(ORT v1.28 的目标级 `COMPILE_WARNING_AS_ERROR ON` 会盖掉全局 `OFF`,把 cutlass unused-function / upsample unused-lambda-capture 升为 `-Werror`,在源头关掉 —— pyke 用更新 ORT、上游已修,故无需)|
 | `scripts/build_ort.sh` | 按 tag/commit hash 拉取 + 打补丁 + cmake 直驱编译 ORT(CPU=libc++ / CUDA=libstdc++)+ 内联 bundle + 打 tar.gz |
 | `scripts/verify_abi.sh` | CI 质量门禁(CPU 校验 libc++;CUDA 校验 libstdc++ + `.so` 集合) |
 | `.github/workflows/build.yml` | **CPU**:输入 ref,矩阵构建 x86_64 + aarch64,发布到 `<ref>-libcxx` |

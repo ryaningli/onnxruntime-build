@@ -13,7 +13,8 @@
 #
 # CPU 基于 ubuntu:20.04 容器(glibc 2.31,zigbuild 锁配套);CUDA 基于 nvidia/cuda cudnn-devel
 # ubuntu22.04(jammy,glibc 2.35)。CUDA 编译不需 GPU(仅运行期需要)。
-# patch 集与 pykeio/ort-artifacts 的 src/patches/all 对齐(0001–0007)。逐个应用,失败仅警告
+# patch 集与 pykeio/ort-artifacts 的 src/patches/all 对齐(0001–0007,跳 0005)+ 本地 0009
+# (关 ORT v1.28 目标级 COMPILE_WARNING_AS_ERROR,见 src/patches/0009-*.patch)。逐个应用,失败仅警告
 # (防 ORT ref 漂移),verify 侧兜底。
 #
 # 用法:
