@@ -75,6 +75,46 @@ case "${ARCH}" in
 	*) echo "ERROR: unsupported architecture: ${ARCH}" >&2; exit 1 ;;
 esac
 
+# 前置冒烟(CUDA 模式):nvcc 的 EDG 前端不认 C++ GSL 属性([[gsl::owner]] 等),ORT v1.28 的 contrib
+# cuda op include gsl 头 → nvcc #2803-D error。抑制诊断的选项形式因 CUDA 版本而异,逐个试,选第一个让
+# [[gsl::owner]] 编过的写入 nvcc_suppr.txt 供真实构建用。这是 nvcc 固有问题(与 clang 版本无关 —— clang-21
+# 解决不了);pyke 用更新 ORT(上游可能已给 gsl 加 __NVCC__ 守卫),v1.28 仍需此抑制。CI 节流:10s 失败好过 40min。
+cuda_smoke() {
+	local d="${WORKDIR}/smoke"
+	local host="${CXX:-clang++-21}"
+	mkdir -p "${d}"
+	cat > "${d}/smoke.cu" <<'EOF'
+#include <cuda_runtime.h>
+#include <vector>
+__global__ void add_k(int n, const float* x, float* y) {
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
+	if (i < n) y[i] = x[i] + 1.0f;
+}
+int main() {
+	std::vector<float> v(4, 1.0f);
+	[[gsl::owner]] int* gp = nullptr; (void)gp;   // 故意触发 nvcc #2803-D(验证抑制)
+	return static_cast<int>(v.size()) > 0 ? 0 : 1;
+}
+EOF
+	echo "==> CUDA smoke: nvcc -ccbin ${host}(libstdc++)+ 探测 2803 抑制形式"
+	local suppr=""
+	for cand in "-Xcudafe --diag_suppress=2803" "-Xcicc --diag_suppress=2803" "--diag_suppress 2803"; do
+		# shellcheck disable=SC2086  # ${cand} 需按空格拆成多个 nvcc 参数
+		if nvcc -ccbin "${host}" ${cand} -std=c++17 "${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
+			suppr="${cand}"
+			break
+		fi
+		echo "    [${cand}] 不行: $(tail -1 "${d}/smoke.err" 2>/dev/null)"
+	done
+	if [ -z "${suppr}" ]; then
+		echo "ERROR: 未能找到抑制 nvcc #2803-D 的形式(最后错误):" >&2
+		cat "${d}/smoke.err" >&2
+		exit 1
+	fi
+	echo "    smoke OK,抑制形式: ${suppr}"
+	printf '%s' "${suppr}" > "${WORKDIR}/nvcc_suppr.txt"
+}
+
 # 统一 cmake 参数(CPU / CUDA 共用部分;stdlib/CUDA 相关按模式分别追加)。
 CMAKE_ARGS=(
 	-S "${WORKDIR}/src/static-build"
@@ -110,14 +150,16 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 	# 无需 gcc-12 wrapper。host_defines.h 在 x86 对 libc++ #error,故不设 -stdlib。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	# (CUDA 参数照搬 pykeio/ort-artifacts build.ts。)
-	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CXX}"
+	cuda_smoke
+	NVCC_SUPPR="$(cat "${WORKDIR}/nvcc_suppr.txt" 2>/dev/null || echo "")"
+	echo "==> CUDA mode(libstdc++): arch=${ARCH} CUDA_HOME=${CUDA_HOME} CUDNN_HOME=${CUDNN_HOME} CUDA_ARCH=${CUDA_ARCH} host=${CXX} suppr=${NVCC_SUPPR}"
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
 		-Donnxruntime_NVCC_THREADS=1
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin clang++-21 -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin clang++-21 -compress-mode=size ${NVCC_SUPPR}"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
