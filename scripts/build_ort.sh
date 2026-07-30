@@ -87,11 +87,14 @@ __global__ void add_k(int n, const float* x, float* y) {
 }
 int main() {
 	std::vector<float> v(4, 1.0f);
+	[[gsl::owner]] int* gp = nullptr; (void)gp;   // 故意触发 nvcc error #2803-D(验证 --diag_suppress)
 	return static_cast<int>(v.size()) > 0 ? 0 : 1;
 }
 EOF
-	echo "==> CUDA smoke: nvcc -ccbin ${CXX:-clang++-16}(libstdc++ 默认)"
-	if ! nvcc -ccbin "${CXX:-clang++-16}" -std=c++17 \
+	echo "==> CUDA smoke: nvcc -ccbin ${CXX_WRAPPER:-${CXX:-clang++-16}}(libstdc++ 默认)"
+	# --diag_suppress=2803:smoke 里故意用 [[gsl::owner]] 触发该诊断,验证抑制生效
+	# (CUDA 12.8 nvcc 不认 [[gsl::]] 属性;ORT 的 gsl/span 会中招)。
+	if ! nvcc -ccbin "${CXX_WRAPPER:-${CXX:-clang++-16}}" --diag_suppress=2803 -std=c++17 \
 			"${d}/smoke.cu" -o "${d}/smoke" 2>"${d}/smoke.err"; then
 		echo "ERROR: nvcc + clang-16 冒烟失败:" >&2
 		cat "${d}/smoke.err" >&2
@@ -140,6 +143,9 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 	chmod +x "${CXX_WRAPPER}"
 	export CXX="${CXX_WRAPPER}"
 	# CUDA 用 libstdc++(clang-16 + gcc-12 头):host_defines.h 在 x86 上对 libc++ #error,故不设 -stdlib。
+	# --diag_suppress=2803:CUDA 12.8 的 nvcc EDG 不认 microsoft GSL span 的 [[gsl::]] 属性
+	#   (error #2803-D "attribute namespace gsl is unrecognized");CUDA 13 的新 EDG 已支持(pyke 用 13 故不中招)。
+	#   [[gsl::]] 只是静态分析注解,忽略无功能影响。2803 覆盖所有 "attribute namespace unrecognized"。
 	# NVCC_THREADS=1 限 nvcc 线程内存;QUICK_BUILD + 各 *_ATTENTION/FPA/FP8 OFF 缩小 CUDA kernel 面、提速降风险。
 	CMAKE_ARGS+=(
 		-Donnxruntime_USE_CUDA=ON
@@ -147,7 +153,7 @@ if [ "${ENABLE_CUDA}" = "1" ]; then
 		-Donnxruntime_CUDNN_HOME="${CUDNN_HOME}"
 		-DCUDA_HOME="${CUDA_HOME}"
 		-DCMAKE_CUDA_ARCHITECTURES="${CUDA_ARCH}"
-		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size"
+		-DCMAKE_CUDA_FLAGS="-ccbin ${CXX_WRAPPER} -compress-mode=size --diag_suppress=2803"
 		-Donnxruntime_USE_FPA_INTB_GEMM=OFF
 		-Donnxruntime_USE_FLASH_ATTENTION=OFF
 		-Donnxruntime_USE_MEMORY_EFFICIENT_ATTENTION=OFF
