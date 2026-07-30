@@ -1,4 +1,4 @@
-# CUDA 版 ONNX Runtime 构建(libc++ ABI)。
+# CUDA 版 ONNX Runtime 构建(libstdc++ ABI —— CUDA 的 host_defines.h 在 x86 拒 libc++)。
 #
 # 与 Dockerfile(CPU)的差异:基础镜像换成 nvidia/cuda 的 cudnn-devel 变体 —— 自带
 #   nvcc + CUDA runtime(cudart/cublas/...)+ cuDNN devel 头,避免在容器里手装 CUDA。
@@ -17,6 +17,10 @@ ENV CC=clang-16
 ENV CXX=clang++-16
 ENV CUDA_HOME=/usr/local/cuda
 
+# ubuntu-toolchain-r PPA 公钥内嵌进来 —— 运行期不再访问 keyserver(add-apt-repository 走 HKP
+# 会在 CI 里挂死 ~9min)。下方 RUN 用它手动加 PPA 源。
+COPY src/cuda/ubuntu-toolchain-r.asc /tmp/ubuntu-toolchain-r.asc
+
 # 1) clang-16 + llvm-16 —— CUDA host 编译器(满足 ORT 要求 gcc/clang≥11.1;CUDA 12.8 支持 clang-16)。
 #    CUDA 走 libstdc++(clang-16 默认 stdlib):CUDA 的 host_defines.h 在 x86 上对 libc++ #error,
 #    故不装 libc++-16-dev。llvm-16 提供 llvm-nm(verify_abi.sh 用)。
@@ -25,12 +29,14 @@ ENV CUDA_HOME=/usr/local/cuda
 #    UBUNTU_CODENAME 来自基础镜像的 /etc/os-release(focal=12.8 / jammy=13)。
 RUN set -eux; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl gnupg wget git build-essential software-properties-common; \
+    apt-get install -y --no-install-recommends ca-certificates curl gnupg wget git build-essential; \
     . /etc/os-release; \
     wget -qO - https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg; \
     echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/${UBUNTU_CODENAME} llvm-toolchain-${UBUNTU_CODENAME}-16 main" \
         > /etc/apt/sources.list.d/llvm.list; \
-    add-apt-repository -y ppa:ubuntu-toolchain-r/test; \
+    gpg --dearmor < /tmp/ubuntu-toolchain-r.asc > /usr/share/keyrings/toolchain.gpg; \
+    echo "deb [signed-by=/usr/share/keyrings/toolchain.gpg] http://ppa.launchpadcontent.net/ubuntu-toolchain-r/test/ubuntu ${UBUNTU_CODENAME} main" \
+        > /etc/apt/sources.list.d/toolchain.list; \
     apt-get update; \
     apt-get install -y --no-install-recommends clang-16 llvm-16 g++-12; \
     rm -rf /var/lib/apt/lists/*
