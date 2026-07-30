@@ -35,8 +35,17 @@ jobs:
             *)    echo "ERROR: unsupported cuda_version '${{ inputs.cuda_version }}' (12.8 | 13)" >&2; exit 1 ;;
           esac
 
+      - uses: docker/setup-buildx-action@v3
       - name: 'Build Docker image [${{ inputs.ort_ref }} · CUDA ${{ inputs.cuda_version }}]'
-        run: docker build -f Dockerfile.cuda --build-arg CUDA_BASE=${{ steps.base.outputs.image }} -t ort-builder-cuda .
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.cuda
+          load: true
+          tags: ort-builder-cuda
+          build-args: CUDA_BASE=${{ steps.base.outputs.image }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: 'Build ONNX Runtime ${{ inputs.ort_ref }} (CUDA ${{ inputs.cuda_version }}, libstdc++) + verify'
         run: |
